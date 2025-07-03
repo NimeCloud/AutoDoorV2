@@ -1,46 +1,38 @@
 #include "common.cpp"
 
-
 #define DEFAULT_DEVICE_NAME_PREFIX "VEHICLE_"
 
 // Otomatik board tespiti
 #if CONFIG_IDF_TARGET_ESP32C3
-  
-  #define INTERNAL_LED_PIN 8 // ESP32 C3 Super Mini
-  #define LED_ON  LOW
-  #define LED_OFF HIGH
 
-  #define AUTH_BUTTON_PIN 21 
+#define INTERNAL_LED_PIN 8 // ESP32 C3 Super Mini
+#define LED_ON LOW
+#define LED_OFF HIGH
+
+#define AUTH_BUTTON_PIN 21
 
 #elif CONFIG_IDF_TARGET_ESP32
 
-  
+#if defined(ENV_EKRANLI)
+#define INTERNAL_LED_PIN 17 // 4 Kırmızı
+#define LED_ON LOW
+#define LED_OFF HIGH
 
-  #if defined(ENV_EKRANLI)
-    #define INTERNAL_LED_PIN 17 // 4 Kırmızı
-    #define LED_ON  LOW
-    #define LED_OFF HIGH
+#define AUTH_BUTTON_PIN 0
 
-    #define AUTH_BUTTON_PIN 0 
+#else
 
-  #else
-  
+#define INTERNAL_LED_PIN 2 // ESP32 WROOM-32
+#define LED_ON HIGH
+#define LED_OFF LOW
 
-    #define INTERNAL_LED_PIN 2 // ESP32 WROOM-32
-    #define LED_ON  HIGH
-    #define LED_OFF LOW
-
-    #define AUTH_BUTTON_PIN 21 
-
-  #endif
-
+#define AUTH_BUTTON_PIN 21
 
 #endif
 
+#endif
 
-
-
-#define FIXED_WIFI_CHANNEL 6      // WiFi kanalı (1, 6 veya 11 önerilir)
+#define FIXED_WIFI_CHANNEL 6 // WiFi kanalı (1, 6 veya 11 önerilir)
 
 const char *buildDate = __DATE__;
 const char *buildTime = __TIME__;
@@ -49,15 +41,13 @@ const unsigned long SCAN_DURATION_MS = 300000;
 
 // vehicle.cpp -> Global Değişkenler bölümüne ekleyin
 const bool FORCE_AUTO_SCAN_ON_STARTUP = false; // true: otomatik başlar, false: sadece butonla başlar
-static bool autoScanTriggered = false; // Bu özelliğin sadece bir kez çalışmasını sağlar
+static bool autoScanTriggered = false;         // Bu özelliğin sadece bir kez çalışmasını sağlar
 
 unsigned long startTime = 0;
 const unsigned long defaultWarningDuration = 10000;
 const unsigned long sendInterval = 1000;
 
 unsigned long lastSendTime = 0;
-
-
 
 static unsigned long lastSettingsChangeTime = 0;
 const int SETTINGS_SAVE_DELAY = 1000;
@@ -66,20 +56,20 @@ std::map<String, String> pairedGates; // Key: Gate MAC, Value: Benzersiz Ortak A
 String targetGateMac = "";
 String lastNonceFromGate = "";
 
-
 Preferences preferences;
 
 // Cihaz ayarları yapısı
-struct DeviceSettings {
+struct DeviceSettings
+{
   int warnDuration;
   String deviceName;
   String pinCode; // Yeni: PIN kodu
-  int logLevel;                   // 0 = INFO, 1 = VERBOSE
+  int logLevel;   // 0 = INFO, 1 = VERBOSE
 
   DeviceSettings()
-    : deviceName(""),
-      warnDuration(defaultWarningDuration),
-      pinCode("") {} // Varsayılan boş PIN
+      : deviceName(""),
+        warnDuration(defaultWarningDuration),
+        pinCode("") {} // Varsayılan boş PIN
 };
 
 DeviceSettings settings;
@@ -96,8 +86,6 @@ bool isAuthenticated = false; // Kullanıcının kimliği doğrulandı mı?
 // LED kontrolü için flag (FreeRTOS görevi için)
 volatile bool ledPulseRequested = false;
 
-
-
 bool authButtonPressed = false;
 unsigned long authButtonPressStartTime = 0;
 bool longPressActionTriggered = false;
@@ -107,7 +95,8 @@ bool isAutoSendingActive = false;
 String manualCommandToSend = "";
 
 // Yeni: Araç durumu için enum
-enum VehicleState {
+enum VehicleState
+{
   VEHICLE_IDLE,
   VEHICLE_WAITING_FOR_GATE_SCAN,
   VEHICLE_AUTHORIZED_ACTIVE
@@ -116,11 +105,10 @@ enum VehicleState {
 volatile VehicleState currentVehicleState = VEHICLE_IDLE;
 uint8_t tempGatePeerMac[6] = {0};
 
-
-
 // LED'i anlık yakıp söndüren FreeRTOS görevi
 // LED'i anlık yakıp söndüren FreeRTOS görevi
-void ledBlinkTask(void *parameter) {
+void ledBlinkTask(void *parameter)
+{
   const TickType_t idleDelay = pdMS_TO_TICKS(10);
 
   // Yeni değişkenler
@@ -129,34 +117,41 @@ void ledBlinkTask(void *parameter) {
   pinMode(INTERNAL_LED_PIN, OUTPUT);
   digitalWrite(INTERNAL_LED_PIN, LED_OFF);
 
-  while (true) {
+  while (true)
+  {
     unsigned long currentTime = millis();
 
     // 1. Öncelik: Sabit yanma isteği var mı?
-    if (solidLedEndTime > 0) {
-      if (currentTime < solidLedEndTime) {
+    if (solidLedEndTime > 0)
+    {
+      if (currentTime < solidLedEndTime)
+      {
         digitalWrite(INTERNAL_LED_PIN, LED_ON);
         vTaskDelay(pdMS_TO_TICKS(50)); // Kodu bloklamadan bekle
         continue;
-      } else {
+      }
+      else
+      {
         // Süre doldu, normale dön
         solidLedEndTime = 0;
         digitalWrite(INTERNAL_LED_PIN, LED_OFF);
       }
     }
-    
+
     // 2. Öncelik: Tarama modu yanıp sönmesi
-    if (currentVehicleState == VEHICLE_WAITING_FOR_GATE_SCAN) {
+    if (currentVehicleState == VEHICLE_WAITING_FOR_GATE_SCAN)
+    {
       digitalWrite(INTERNAL_LED_PIN, LED_ON);
       vTaskDelay(pdMS_TO_TICKS(500));
       digitalWrite(INTERNAL_LED_PIN, LED_OFF);
       vTaskDelay(pdMS_TO_TICKS(500));
       continue;
     }
-    
+
     // 3. Öncelik: Kısa pulse isteği (artık bunu kullanmıyoruz ama kalabilir)
-    if (ledPulseRequested) {
-      ledPulseRequested = false; 
+    if (ledPulseRequested)
+    {
+      ledPulseRequested = false;
       solidLedEndTime = currentTime + 10000; // 10 saniye boyunca LED'i yak
       continue;
     }
@@ -167,26 +162,30 @@ void ledBlinkTask(void *parameter) {
   }
 }
 
-unsigned long parseWarningDuration(const std::string &s) {
+unsigned long parseWarningDuration(const std::string &s)
+{
   char *endptr;
   unsigned long val = strtoul(s.c_str(), &endptr, 10);
   return (*endptr == '\0') ? val : 0;
 }
 
-unsigned long getWarningDuration() {
-  if (settings.warnDuration < 1000 || settings.warnDuration > SCAN_DURATION_MS) {
+unsigned long getWarningDuration()
+{
+  if (settings.warnDuration < 1000 || settings.warnDuration > SCAN_DURATION_MS)
+  {
     return defaultWarningDuration;
   }
   return settings.warnDuration;
 }
 
-
-String getDeviceNameFromMac(String mac) {
+String getDeviceNameFromMac(String mac)
+{
   mac.replace(":", "");
   return String(DEFAULT_DEVICE_NAME_PREFIX) + mac.substring(mac.length() - 4);
 }
 
-void printSettingsToSerial() {
+void printSettingsToSerial()
+{
   JsonDocument jsonDoc;
   jsonDoc["warnDuration"] = settings.warnDuration;
   jsonDoc["deviceName"] = settings.deviceName;
@@ -199,14 +198,16 @@ void printSettingsToSerial() {
   Serial.println(jsonString);
 }
 
-void loadSettings() {
+void loadSettings()
+{
   preferences.begin("settings", false);
   settings.warnDuration = preferences.getInt("warnDuration", defaultWarningDuration);
   settings.deviceName = preferences.getString("deviceName", "");
   settings.pinCode = preferences.getString("pinCode", "");
   preferences.end();
 
-  if (settings.deviceName.isEmpty()) {
+  if (settings.deviceName.isEmpty())
+  {
     BLEDevice::init("TEMP");
     bleMacAddress = BLEDevice::getAddress().toString().c_str();
     BLEDevice::deinit();
@@ -216,12 +217,13 @@ void loadSettings() {
     preferences.end();
     delay(100);
   }
-  
+
   Serial.print(getTimestamp() + "Ayarlar yüklendi! JSON: ");
   printSettingsToSerial();
 }
 
-void saveSettings() {
+void saveSettings()
+{
   preferences.begin("settings", false);
   preferences.putString("deviceName", settings.deviceName);
   preferences.putInt("warnDuration", settings.warnDuration);
@@ -232,27 +234,37 @@ void saveSettings() {
   delay(100);
 }
 
-void sendStatusNotification(const String& statusMsg) {
-  if (pStatusChar) {
-    BLEDescriptor* p2902Descriptor = pStatusChar->getDescriptorByUUID(BLEUUID((uint16_t)0x2902));
-    
-    if (p2902Descriptor && ((BLE2902*)p2902Descriptor)->getNotifications()) {
+void sendStatusNotification(const String &statusMsg)
+{
+  if (pStatusChar)
+  {
+    BLEDescriptor *p2902Descriptor = pStatusChar->getDescriptorByUUID(BLEUUID((uint16_t)0x2902));
+
+    if (p2902Descriptor && ((BLE2902 *)p2902Descriptor)->getNotifications())
+    {
       pStatusChar->setValue(statusMsg.c_str());
       pStatusChar->notify();
       Serial.print(getTimestamp() + " Durum bildirimi gönderildi: ");
       Serial.println(statusMsg);
-    } else {
+    }
+    else
+    {
       Serial.println(getTimestamp() + " Durum bildirimi gönderilemedi (client abone değil).");
     }
-  } else {
+  }
+  else
+  {
     Serial.println(getTimestamp() + " Durum bildirimi gönderilemedi (pStatusChar null).");
   }
 }
 
-class MyCharacteristicCallbacks : public BLECharacteristicCallbacks {
-  
-  void onWrite(BLECharacteristic *pCharacteristic) {
-    if (!isAuthenticated && !settings.pinCode.isEmpty()) {
+class MyCharacteristicCallbacks : public BLECharacteristicCallbacks
+{
+
+  void onWrite(BLECharacteristic *pCharacteristic)
+  {
+    if (!isAuthenticated && !settings.pinCode.isEmpty())
+    {
       Serial.println(getTimestamp() + " Ayar yazma reddedildi: Kimlik doğrulanmadı.");
       sendStatusNotification("AUTH_REQUIRED");
       return;
@@ -262,18 +274,22 @@ class MyCharacteristicCallbacks : public BLECharacteristicCallbacks {
     Serial.print(getTimestamp() + " Ayar karakteristikine gelen veri: ");
     Serial.println(value.c_str());
 
-    if (!value.empty()) {
+    if (!value.empty())
+    {
       JsonDocument jsonDoc;
       DeserializationError error = deserializeJson(jsonDoc, value);
 
-      if (!error) {
+      if (!error)
+      {
         Serial.println(getTimestamp() + " Ayar JSON başarıyla ayrıştırıldı.");
         bool anyChangeDetected = false;
         String newPinCode = "";
 
-        if (jsonDoc["warnDuration"].is<int>()) {
+        if (jsonDoc["warnDuration"].is<int>())
+        {
           int newWarnDuration = jsonDoc["warnDuration"];
-          if (settings.warnDuration != newWarnDuration) {
+          if (settings.warnDuration != newWarnDuration)
+          {
             settings.warnDuration = newWarnDuration;
             anyChangeDetected = true;
             Serial.print(getTimestamp() + " warnDuration güncellendi: ");
@@ -281,9 +297,11 @@ class MyCharacteristicCallbacks : public BLECharacteristicCallbacks {
           }
         }
 
-        if (jsonDoc["deviceName"].is<String>()) {
+        if (jsonDoc["deviceName"].is<String>())
+        {
           String newDeviceName = jsonDoc["deviceName"].as<String>();
-          if (settings.deviceName != newDeviceName) {
+          if (settings.deviceName != newDeviceName)
+          {
             settings.deviceName = newDeviceName;
             anyChangeDetected = true;
             isDeviceNameChanged = true;
@@ -291,52 +309,70 @@ class MyCharacteristicCallbacks : public BLECharacteristicCallbacks {
             Serial.println(settings.deviceName);
           }
         }
-        
-        if (!jsonDoc["pinCode"].isNull()) {
-            newPinCode = jsonDoc["pinCode"].as<String>();
-            
-            if (newPinCode.isEmpty()) {
-                if (!settings.pinCode.isEmpty()) {
-                    settings.pinCode = "";
-                    anyChangeDetected = true;
-                    Serial.println(getTimestamp() + " PIN sıfırlandı.");
-                    isAuthenticated = false;
-                    sendStatusNotification("PIN_RESET");
-                } else {
-                    Serial.println(getTimestamp() + " PIN zaten boştu, sıfırlama işlemi yapılmadı.");
-                }
-            } else {
-                if (newPinCode.length() == 4 && newPinCode.toInt() >= 0 && newPinCode.toInt() <= 9999) {
-                    if (settings.pinCode != newPinCode) {
-                        settings.pinCode = newPinCode;
-                        anyChangeDetected = true;
-                        Serial.print(getTimestamp() + " pinCode güncellendi: ");
-                        Serial.println(settings.pinCode);
-                        isAuthenticated = false;
-                        sendStatusNotification("PIN_CHANGED");
-                    } else {
-                         Serial.println(getTimestamp() + " Gelen PIN mevcut PIN ile aynı.");
-                    }
-                } else {
-                    Serial.println(getTimestamp() + " Geçersiz PIN formatı! PIN güncellenmedi.");
-                    sendStatusNotification("INVALID_PIN_FORMAT");
-                }
+
+        if (!jsonDoc["pinCode"].isNull())
+        {
+          newPinCode = jsonDoc["pinCode"].as<String>();
+
+          if (newPinCode.isEmpty())
+          {
+            if (!settings.pinCode.isEmpty())
+            {
+              settings.pinCode = "";
+              anyChangeDetected = true;
+              Serial.println(getTimestamp() + " PIN sıfırlandı.");
+              isAuthenticated = false;
+              sendStatusNotification("PIN_RESET");
             }
+            else
+            {
+              Serial.println(getTimestamp() + " PIN zaten boştu, sıfırlama işlemi yapılmadı.");
+            }
+          }
+          else
+          {
+            if (newPinCode.length() == 4 && newPinCode.toInt() >= 0 && newPinCode.toInt() <= 9999)
+            {
+              if (settings.pinCode != newPinCode)
+              {
+                settings.pinCode = newPinCode;
+                anyChangeDetected = true;
+                Serial.print(getTimestamp() + " pinCode güncellendi: ");
+                Serial.println(settings.pinCode);
+                isAuthenticated = false;
+                sendStatusNotification("PIN_CHANGED");
+              }
+              else
+              {
+                Serial.println(getTimestamp() + " Gelen PIN mevcut PIN ile aynı.");
+              }
+            }
+            else
+            {
+              Serial.println(getTimestamp() + " Geçersiz PIN formatı! PIN güncellenmedi.");
+              sendStatusNotification("INVALID_PIN_FORMAT");
+            }
+          }
         }
 
-        if (anyChangeDetected) {
+        if (anyChangeDetected)
+        {
           isSettingsChanged = true;
           lastSettingsChangeTime = millis();
           Serial.println(getTimestamp() + " Ayarlarda değişiklik tespit edildi! Kayıt bekleniyor...");
-          if (jsonDoc["pinCode"].isNull() || (newPinCode.length() == 4 || newPinCode.isEmpty())) {
+          if (jsonDoc["pinCode"].isNull() || (newPinCode.length() == 4 || newPinCode.isEmpty()))
+          {
             sendStatusNotification("SETTINGS_UPDATED");
           }
-        } else {
+        }
+        else
+        {
           Serial.println(getTimestamp() + " Gelen JSON'da mevcut ayarlarla farklılık yok.");
           sendStatusNotification("NO_CHANGE");
         }
-
-      } else {
+      }
+      else
+      {
         Serial.print(getTimestamp() + " JSON ayrıştırma hatası: ");
         Serial.println(error.c_str());
         sendStatusNotification("JSON_ERROR");
@@ -344,8 +380,10 @@ class MyCharacteristicCallbacks : public BLECharacteristicCallbacks {
     }
   }
 
-  void onRead(BLECharacteristic *pCharacteristic) {
-    if (!isAuthenticated && !settings.pinCode.isEmpty()) {
+  void onRead(BLECharacteristic *pCharacteristic)
+  {
+    if (!isAuthenticated && !settings.pinCode.isEmpty())
+    {
       Serial.println(getTimestamp() + " Ayar okuma reddedildi: Kimlik doğrulanmadı.");
       pCharacteristic->setValue("{\"error\": \"Authentication required\"}");
       sendStatusNotification("AUTH_REQUIRED");
@@ -369,33 +407,44 @@ class MyCharacteristicCallbacks : public BLECharacteristicCallbacks {
   }
 };
 
-class PinAuthCharacteristicCallbacks : public BLECharacteristicCallbacks {
-  void onWrite(BLECharacteristic *pCharacteristic) {
+class PinAuthCharacteristicCallbacks : public BLECharacteristicCallbacks
+{
+  void onWrite(BLECharacteristic *pCharacteristic)
+  {
     std::string value = pCharacteristic->getValue();
     Serial.print(getTimestamp() + " PIN doğrulama karakteristikine gelen veri: ");
     Serial.println(value.c_str());
 
-    if (!value.empty()) {
-      if (settings.pinCode.isEmpty()) {
+    if (!value.empty())
+    {
+      if (settings.pinCode.isEmpty())
+      {
         isAuthenticated = true;
         Serial.println(getTimestamp() + " PIN ayarlı değil, otomatik kimlik doğrulandı.");
         sendStatusNotification("AUTH_SUCCESS");
-      } else if (value == settings.pinCode.c_str()) {
+      }
+      else if (value == settings.pinCode.c_str())
+      {
         isAuthenticated = true;
         Serial.println(getTimestamp() + " PIN doğrulama başarılı!");
         sendStatusNotification("AUTH_SUCCESS");
-      } else {
+      }
+      else
+      {
         isAuthenticated = false;
         Serial.println(getTimestamp() + " PIN doğrulama başarısız! Yanlış PIN.");
         sendStatusNotification("AUTH_FAILED");
       }
-    } else {
+    }
+    else
+    {
       Serial.println(getTimestamp() + " PIN doğrulama karakteristikine boş veri geldi.");
       sendStatusNotification("INVALID_PIN_FORMAT");
     }
   }
 
-  void onRead(BLECharacteristic *pCharacteristic) {
+  void onRead(BLECharacteristic *pCharacteristic)
+  {
     Serial.println(getTimestamp() + " PIN auth okuma talebi alındı. PIN durumu gönderiliyor.");
     JsonDocument jsonDoc;
     jsonDoc["pinRequired"] = !settings.pinCode.isEmpty();
@@ -405,88 +454,103 @@ class PinAuthCharacteristicCallbacks : public BLECharacteristicCallbacks {
   }
 };
 
-class MyServerCallbacks : public BLEServerCallbacks {
-  void onConnect(BLEServer* pServer) {
+class MyServerCallbacks : public BLEServerCallbacks
+{
+  void onConnect(BLEServer *pServer)
+  {
     Serial.println(getTimestamp() + " Bir client bağlandı.");
     isAuthenticated = false;
   }
 
-  void onDisconnect(BLEServer* pServer) {
+  void onDisconnect(BLEServer *pServer)
+  {
     Serial.println(getTimestamp() + " Client bağlantısı kesildi.");
     BLEDevice::startAdvertising(); // Reklamı tekrar başlat
   }
 };
 
-
-
-bool isGatePaired(const String& mac) {
+bool isGatePaired(const String &mac)
+{
   // std::map'in .count() metodu, verilen anahtarın map'te olup olmadığını
   // (0 veya 1) çok hızlı bir şekilde döndürür.
   return pairedGates.count(mac) > 0;
 }
 // vehicle.cpp -> savePairedGates fonksiyonunu bununla değiştirin
-void savePairedGates() {
+void savePairedGates()
+{
   preferences.begin("paired_gates", false);
-  
+
   JsonDocument doc;
   // Her zaman bir JSON dizisi oluşturarak başla
   JsonArray array = doc.to<JsonArray>();
 
   // Map'teki her bir [mac, key] çiftini bu diziye yeni bir nesne olarak ekle
-  for (auto const& pair : pairedGates) {
+  for (auto const &pair : pairedGates)
+  {
     JsonObject device = array.add<JsonObject>(); // <<< ÖNEMLİ DEĞİŞİKLİK
     device["mac"] = pair.first;
     device["key"] = pair.second;
   }
-  
+
   String jsonOutput;
   serializeJson(doc, jsonOutput);
-  
+
   preferences.putString("gates_json", jsonOutput);
-  
+
   preferences.end();
   delay(100);
   logMessage("Saved " + String(pairedGates.size()) + " paired Gates.", 0, settings.logLevel);
 }
 
-
-void loadPairedGates() {
-  pairedGates.clear(); // Yüklemeden önce mevcut listeyi temizle
+void loadPairedGates()
+{
+  pairedGates.clear();                     // Yüklemeden önce mevcut listeyi temizle
   preferences.begin("paired_gates", true); // Sadece okuma modunda aç
 
   // Kayıtlı JSON metnini oku
   String jsonInput = preferences.getString("gates_json", "");
-  
-  if (jsonInput.length() > 0) {
+
+  if (jsonInput.length() > 0)
+  {
     JsonDocument doc;
     DeserializationError error = deserializeJson(doc, jsonInput);
-    
-    if (!error) {
+
+    if (!error)
+    {
       JsonArray array = doc.as<JsonArray>();
       // JSON dizisindeki her bir objeyi map'e geri yükle
-      for (JsonObject device : array) {
+      for (JsonObject device : array)
+      {
         String mac = device["mac"];
         String key = device["key"];
-        if (mac.length() > 0 && key.length() > 0) {
-            pairedGates[mac] = key;
+        if (mac.length() > 0 && key.length() > 0)
+        {
+          pairedGates[mac] = key;
         }
       }
-    } else {
-        logMessage("Failed to parse paired gates JSON.", 0, settings.logLevel);
+    }
+    else
+    {
+      logMessage("Failed to parse paired gates JSON.", 0, settings.logLevel);
     }
   }
-  
+
   preferences.end();
   logMessage("Loaded " + String(pairedGates.size()) + " paired Gates.", 0, settings.logLevel);
 }
 
 // Eşleşilen Gate'leri başlangıçta seri monitöre yazdırır
-void printPairedGates() {
+void printPairedGates()
+{
   logMessage("--- Paired Gates (MAC -> Unique Key) ---", 0, settings.logLevel);
-  if (pairedGates.empty()) {
+  if (pairedGates.empty())
+  {
     logMessage("  No paired Gates found.", 0, settings.logLevel);
-  } else {
-    for (auto const& pair : pairedGates) { // <-- Döngüyü bu şekilde değiştirin
+  }
+  else
+  {
+    for (auto const &pair : pairedGates)
+    { // <-- Döngüyü bu şekilde değiştirin
       String mac = pair.first;
       String key = pair.second;
       logMessage("  - " + mac + " -> " + key.substring(0, 8) + "...", 0, settings.logLevel);
@@ -494,132 +558,29 @@ void printPairedGates() {
   }
   logMessage("----------------------------------------", 0, settings.logLevel);
 }
-// ESP-NOW veri alındığında çağrılır
-
-// vehicle.cpp -> OnDataRecv fonksiyonu
-void OnDataRecv(const uint8_t *mac_addr, const uint8_t *incomingData, int len) {
-
-  /*
-// 1. Gönderenin MAC adresini yazdır
-  Serial.print("Packet received from: ");
-  Serial.println(macToString(mac_addr)); // macToString helper fonksiyonunuzu kullanır
-
-  // 2. Gelen verinin boyutunu yazdır
-  Serial.print("Data len: ");
-  Serial.print(len);
-  Serial.println(" bytes");
-
-  */
-
-  // 3. Gelen veriyi metin (String) olarak yazdırmayı dene
-  // Bu, JSON gibi okunabilir veriler için idealdir.
-  String message = String((char*)incomingData, len);
-  Serial.print("Data as String: ");
-  Serial.println(message);
-
-  /*
-
-  // 4. Gelen veriyi ham byte (Hexadecimal) olarak yazdır
-  // Bu, binary verileri veya görünmeyen karakterleri analiz etmek için kullanışlıdır.
-  Serial.print("Data as Hex: ");
-  for (int i = 0; i < len; i++) {
-    Serial.printf("%02X ", incomingData[i]);
-  }
-  Serial.println("\n------------------------------------"); // Ayraç ekle
-
-  */
-
-    JsonDocument doc;
-    DeserializationError error = deserializeJson(doc, incomingData, len);
-    if (error) return;
-    const char* msgType = doc["msgType"];
-    if (!msgType) return;
-    String gateMac = macToString(mac_addr);
-
-    if (strcmp(msgType, "SCAN_REQUEST") == 0 && currentVehicleState == VEHICLE_WAITING_FOR_GATE_SCAN) {
-
-        Serial.println("SCAN_REQUEST recieved!");
-
-        // 1. ADIM: Cevap gönderilecek Gate'i geçici olarak peer listesine ekle
-        esp_now_peer_info_t peerInfo = {};
-        memcpy(peerInfo.peer_addr, mac_addr, 6);
-        peerInfo.channel = FIXED_WIFI_CHANNEL; // common.h'deki ortak kanalı kullan
-        peerInfo.encrypt = false;              // Bu iletişim şifresiz
-
-        // Peer'in zaten ekli olup olmadığını kontrol etmek iyi bir pratiktir
-        if (!esp_now_is_peer_exist(mac_addr)) {
-            if (esp_now_add_peer(&peerInfo) != ESP_OK) {
-              Serial.println("Failed to add Gate as a peer.");
-              return; // Peer eklenemezse devam etme
-            }
-        }
-
-
-        JsonDocument ackDoc;
-        ackDoc["msgType"] = "AUTH_ACK";
-        char jsonBuffer[64];
-        serializeJson(ackDoc, jsonBuffer);
-
-        esp_err_t result = esp_now_send(mac_addr, (const uint8_t*)jsonBuffer, strlen(jsonBuffer));
-
-        if (result != ESP_OK) {
-            Serial.println("Error sending AUTH_ACK.");
-        }
-
-        Serial.println("AUTH_ACK sent!");
-
-        currentVehicleState = VEHICLE_AUTHORIZED_ACTIVE;
-
-
-    } else if (strcmp(msgType, "KEY_DELIVERY") == 0) {
-        const char* encryptedKey = doc["key"];
-        if (encryptedKey) {
-            String decryptedKeyRaw = encryptDecrypt(String(encryptedKey), PMK, sizeof(PMK));
-            char decryptedKeyHex[33];
-            for(int i = 0; i < decryptedKeyRaw.length(); i++) { sprintf(decryptedKeyHex + i * 2, "%02x", (uint8_t)decryptedKeyRaw[i]); }
-            
-            pairedGates[gateMac] = String(decryptedKeyHex);
-            savePairedGates();
-            
-            JsonDocument keyAckDoc;
-            keyAckDoc["msgType"] = "KEY_ACK";
-            char ackBuffer[32];
-            serializeJson(keyAckDoc, ackBuffer);
-            esp_now_send(mac_addr, (const uint8_t*)ackBuffer, strlen(ackBuffer));
-            
-            logMessage("Stored new key for " + gateMac + ". Sent KEY_ACK.", 0, settings.logLevel);
-            currentVehicleState = VEHICLE_IDLE;
-            ledPulseRequested = true;
-        }
-    } else if (strcmp(msgType, "BEACON") == 0) {
-        if (pairedGates.count(gateMac)) {
-            lastNonceFromGate = doc["nonce"].as<String>();
-            targetGateMac = gateMac;
-        }
-    }
-}
-
-// ESP-NOW veri gönderildiğinde çağrılır
-void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
-  Serial.println(String(getTimestamp()) + " Last Packet Send Status: " + String(status == ESP_NOW_SEND_SUCCESS ? "Success" : "Fail"));
-}
 
 // vehicle.cpp -> sendSecureCommand fonksiyonu
-void sendSecureCommand(String command) {
-  if (targetGateMac.isEmpty() || lastNonceFromGate.isEmpty()) {
+void sendSecureCommand(String command)
+{
+  if (targetGateMac.isEmpty() || lastNonceFromGate.isEmpty())
+  {
     logMessage("Cannot send command: No recent beacon from a paired gate.", 0, settings.logLevel);
     return;
   }
-    
+
   String sharedKeyHex = pairedGates[targetGateMac];
-  if (sharedKeyHex.isEmpty()) {
+  if (sharedKeyHex.isEmpty())
+  {
     logMessage("Cannot send command: No shared key found for gate " + targetGateMac, 0, settings.logLevel);
     return;
   }
 
   uint8_t sharedKey[16];
-  for(int i=0; i<16; i++){ sscanf(sharedKeyHex.c_str() + i*2, "%2hhx", &sharedKey[i]); }
-    
+  for (int i = 0; i < 16; i++)
+  {
+    sscanf(sharedKeyHex.c_str() + i * 2, "%2hhx", &sharedKey[i]);
+  }
+
   String vehicleMac = WiFi.macAddress();
   String dataToSign = vehicleMac + command + lastNonceFromGate;
   String hmac = calculateHmac(sharedKey, 16, dataToSign.c_str());
@@ -629,18 +590,129 @@ void sendSecureCommand(String command) {
   doc["command"] = command;
   doc["nonce"] = lastNonceFromGate;
   doc["hmac"] = hmac;
-    
+
   char jsonBuffer[256];
   serializeJson(doc, jsonBuffer);
-  
+
   uint8_t targetMacBytes[6];
-  sscanf(targetGateMac.c_str(), "%2hhx:%2hhx:%2hhx:%2hhx:%2hhx:%2hhx", 
+  sscanf(targetGateMac.c_str(), "%2hhx:%2hhx:%2hhx:%2hhx:%2hhx:%2hhx",
          &targetMacBytes[0], &targetMacBytes[1], &targetMacBytes[2], &targetMacBytes[3], &targetMacBytes[4], &targetMacBytes[5]);
-  
-  esp_now_send(targetMacBytes, (const uint8_t*)jsonBuffer, strlen(jsonBuffer));
+
+  esp_now_send(targetMacBytes, (const uint8_t *)jsonBuffer, strlen(jsonBuffer));
   logMessage("Sent SECURE_COMMAND: " + command, 0, settings.logLevel);
 }
-void setup() {
+// ESP-NOW veri alındığında çağrılır
+
+
+void OnDataRecv(const uint8_t *mac_addr, const uint8_t *incomingData, int len) {
+    // Gelen veriyi loglama (isteğe bağlı, hata ayıklama için faydalı)
+    // String message = String((char *)incomingData, len);
+    // Serial.println("Data as String: " + message);
+
+    JsonDocument doc;
+    DeserializationError error = deserializeJson(doc, incomingData, len);
+    if (error) {
+        logMessage("JSON parsing error!", 1, settings.logLevel);
+        return;
+    }
+
+    const char* msgType = doc["msgType"];
+    if (!msgType) {
+        logMessage("msgType field missing!", 1, settings.logLevel);
+        return;
+    }
+
+    String gateMac = macToString(mac_addr);
+
+    // --- 1. EŞLEŞME ADIMI: Tarama İsteğine Cevap ---
+    if (strcmp(msgType, "SCAN_REQUEST") == 0 && currentVehicleState == VEHICLE_WAITING_FOR_GATE_SCAN) {
+        logMessage("SCAN_REQUEST recieved! Replying with AUTH_ACK...", 0, settings.logLevel);
+
+        // Cevap gönderilecek Gate'i geçici olarak peer listesine ekle
+        esp_now_peer_info_t peerInfo = {};
+        memcpy(peerInfo.peer_addr, mac_addr, 6);
+        peerInfo.channel = FIXED_WIFI_CHANNEL;
+        peerInfo.encrypt = false;
+
+        if (!esp_now_is_peer_exist(mac_addr)) {
+            if (esp_now_add_peer(&peerInfo) != ESP_OK) {
+                logMessage("Failed to add Gate as a peer.", 0, settings.logLevel);
+                return;
+            }
+        }
+
+        // AUTH_ACK mesajını oluştur ve gönder
+        JsonDocument ackDoc;
+        ackDoc["msgType"] = "AUTH_ACK";
+        char jsonBuffer[64];
+        serializeJson(ackDoc, jsonBuffer);
+        esp_now_send(mac_addr, (const uint8_t*)jsonBuffer, strlen(jsonBuffer));
+    } 
+    // --- 2. EŞLEŞME ADIMI: Anahtar Teslimini İşleme ---
+    else if (strcmp(msgType, "KEY_DELIVERY") == 0) {
+        const char* encryptedKey = doc["key"];
+        if (encryptedKey) {
+            // Gelen anahtarı PMK ile çöz
+            String decryptedKeyRaw = encryptDecrypt(String(encryptedKey), PMK, sizeof(PMK));
+            
+            // Çözülmüş ham byte'ları Hex String'e çevir (saklamak için)
+            char decryptedKeyHex[33];
+            for(int i = 0; i < decryptedKeyRaw.length(); i++) {
+                sprintf(decryptedKeyHex + i * 2, "%02x", (uint8_t)decryptedKeyRaw[i]);
+            }
+            decryptedKeyHex[32] = '\0';
+
+            // Yeni anahtarı Gate'in MAC adresiyle birlikte kaydet
+            pairedGates[gateMac] = String(decryptedKeyHex);
+            savePairedGates();
+            
+            // Gate'e her şeyin yolunda olduğunu bildir (KEY_ACK)
+            JsonDocument keyAckDoc;
+            keyAckDoc["msgType"] = "KEY_ACK";
+            char ackBuffer[32];
+            serializeJson(keyAckDoc, ackBuffer);
+            esp_now_send(mac_addr, (const uint8_t*)ackBuffer, strlen(ackBuffer));
+            
+            logMessage("Stored new key for " + gateMac + ". Sent KEY_ACK.", 0, settings.logLevel);
+            
+            // Eşleşme tamamlandı, tarama modundan çık ve başarı LED'ini yak
+            currentVehicleState = VEHICLE_IDLE;
+            ledPulseRequested = true;
+        }
+    } 
+    // --- 3. NORMAL ÇALIŞMA: Beacon'ları Dinleyip Otomatik Komut Gönderme ---
+    else if (strcmp(msgType, "BEACON") == 0) {
+        // Bu beacon, bizim daha önce eşleştiğimiz bir kapıdan mı geliyor?
+        if (pairedGates.count(gateMac)) {
+            // Evet, tanıdık bir kapı.
+            
+            // Gerekli bilgileri al (nonce ve hedef kapı MAC)
+            lastNonceFromGate = doc["nonce"].as<String>();
+            targetGateMac = gateMac;
+            
+            String commandToSend;
+            // Cihazın çalışma süresi, ayarlardaki uyarı süresinden az mı?
+            if (millis() < settings.warnDuration) {
+                commandToSend = "WARN"; // Evet, o zaman sadece uyar.
+            } else {
+                commandToSend = "OPEN"; // Hayır, bir süredir çalışıyor, kapıyı aç.
+            }
+
+            // Güvenli komutu gönder
+            sendSecureCommand(commandToSend);
+        }
+    }
+}
+
+// ESP-NOW veri gönderildiğinde çağrılır
+void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status)
+{
+  Serial.println(String(getTimestamp()) + " Last Packet Send Status: " + String(status == ESP_NOW_SEND_SUCCESS ? "Success" : "Fail"));
+}
+
+
+void setup()
+{
   Serial.begin(115200);
   Serial.println(getTimestamp() + " Vehicle Control System Starting...");
 
@@ -648,13 +720,12 @@ void setup() {
   digitalWrite(INTERNAL_LED_PIN, LED_OFF);
   pinMode(AUTH_BUTTON_PIN, INPUT_PULLUP);
 
-
-// Ayarları ve kayıtlı mac id'leri yükle
-  loadSettings();  
+  // Ayarları ve kayıtlı mac id'leri yükle
+  loadSettings();
   printSettingsToSerial();
 
   loadPairedGates();
-  printPairedGates(); 
+  printPairedGates();
 
   // WiFi'yi istasyon moduna ayarla
   WiFi.mode(WIFI_STA);
@@ -662,7 +733,8 @@ void setup() {
   Serial.println(getTimestamp() + " WiFi set to Station Mode.");
 
   // ESP-NOW'ı başlat
-  if (esp_now_init() != ESP_OK) {
+  if (esp_now_init() != ESP_OK)
+  {
     Serial.println(getTimestamp() + " Error initializing ESP-NOW");
     return;
   }
@@ -677,13 +749,14 @@ void setup() {
   esp_now_peer_info_t peerInfo;
   memcpy(peerInfo.peer_addr, broadcastAddress, 6);
   peerInfo.channel = FIXED_WIFI_CHANNEL;
-  peerInfo.encrypt = false; 
+  peerInfo.encrypt = false;
   memcpy(peerInfo.lmk, PMK, 16); // PSK'yı ayarla
-  peerInfo.ifidx = WIFI_IF_STA; // Station arayüzünü kullan
+  peerInfo.ifidx = WIFI_IF_STA;  // Station arayüzünü kullan
 
   esp_wifi_set_channel(FIXED_WIFI_CHANNEL, WIFI_SECOND_CHAN_NONE);
 
-  if (esp_now_add_peer(&peerInfo) != ESP_OK){
+  if (esp_now_add_peer(&peerInfo) != ESP_OK)
+  {
     Serial.println(getTimestamp() + " Failed to add broadcast peer");
     return;
   }
@@ -701,23 +774,20 @@ void setup() {
   BLEService *pService = pServer->createService(SERVICE_UUID);
 
   pSettingsChar = pService->createCharacteristic(
-                                         CHAR_SETTINGS_UUID,
-                                         BLECharacteristic::PROPERTY_READ |
-                                         BLECharacteristic::PROPERTY_WRITE
-                                       );
+      CHAR_SETTINGS_UUID,
+      BLECharacteristic::PROPERTY_READ |
+          BLECharacteristic::PROPERTY_WRITE);
   pSettingsChar->setCallbacks(new MyCharacteristicCallbacks());
 
   pPinAuthChar = pService->createCharacteristic(
-                                         CHAR_PIN_AUTH_UUID,
-                                         BLECharacteristic::PROPERTY_WRITE |
-                                         BLECharacteristic::PROPERTY_READ
-                                       );
+      CHAR_PIN_AUTH_UUID,
+      BLECharacteristic::PROPERTY_WRITE |
+          BLECharacteristic::PROPERTY_READ);
   pPinAuthChar->setCallbacks(new PinAuthCharacteristicCallbacks());
 
   pStatusChar = pService->createCharacteristic(
-                                         CHAR_STATUS_UUID,
-                                         BLECharacteristic::PROPERTY_NOTIFY
-                                       );
+      CHAR_STATUS_UUID,
+      BLECharacteristic::PROPERTY_NOTIFY);
   pStatusChar->addDescriptor(new BLE2902());
 
   pService->start();
@@ -735,32 +805,31 @@ void setup() {
   digitalWrite(INTERNAL_LED_PIN, LED_OFF);
   delay(1000);
 
-  
   // LED görevini başlat
   xTaskCreatePinnedToCore(
-    ledBlinkTask,
-    "LED Blink Task",
-    1024, // Stack size
-    NULL,
-    1,    // Priority
-    NULL, // Task handle
-    0     // Core
+      ledBlinkTask,
+      "LED Blink Task",
+      1024, // Stack size
+      NULL,
+      1,    // Priority
+      NULL, // Task handle
+      0     // Core
   );
 
   Serial.println(getTimestamp() + " Setup tamamlandı...");
-  
-
 }
 
-
-void loop() {
+void loop()
+{
   unsigned long currentTime = millis();
 
   // --- Başlangıçta Otomatik Tarama Tetikleyicisi ---
   // Cihaz açıldıktan 3 saniye sonra, eğer ayarlanmışsa, otomatik olarak eşleşme moduna girer.
   // Not: Bu blok, sizin isteğiniz üzerine, cihazda kayıtlı kapı olsa bile çalışır.
-  if (FORCE_AUTO_SCAN_ON_STARTUP && !autoScanTriggered && currentTime >= 3000) {
-    if (currentVehicleState == VEHICLE_IDLE) {
+  if (FORCE_AUTO_SCAN_ON_STARTUP && !autoScanTriggered && currentTime >= 3000)
+  {
+    if (currentVehicleState == VEHICLE_IDLE)
+    {
       currentVehicleState = VEHICLE_WAITING_FOR_GATE_SCAN;
       logMessage("FORCED AUTO-SCAN: Entering WAITING_FOR_GATE_SCAN mode...", 0, settings.logLevel);
     }
@@ -768,7 +837,8 @@ void loop() {
   }
 
   // --- Ayarların Gerekirse Kaydedilmesi ---
-  if (isSettingsChanged && (currentTime - lastSettingsChangeTime >= SETTINGS_SAVE_DELAY)) {
+  if (isSettingsChanged && (currentTime - lastSettingsChangeTime >= SETTINGS_SAVE_DELAY))
+  {
     saveSettings();
     isSettingsChanged = false;
   }
@@ -777,9 +847,11 @@ void loop() {
   bool isButtonPressed = (digitalRead(AUTH_BUTTON_PIN) == LOW);
 
   // Buton basılı tutuluyorsa...
-  if (isButtonPressed) {
+  if (isButtonPressed)
+  {
     // Eğer butona YENİ basıldıysa (ilk an)
-    if (!authButtonPressed) {
+    if (!authButtonPressed)
+    {
       authButtonPressed = true;
       longPressActionTriggered = false; // Her yeni basışta eylem bayrağını sıfırla
       authButtonPressStartTime = currentTime;
@@ -787,42 +859,50 @@ void loop() {
     }
 
     // Buton 3 saniyedir basılı tutuluyorsa VE uzun basış eylemi daha önce tetiklenmediyse...
-    if (!longPressActionTriggered && (currentTime - authButtonPressStartTime >= LONG_PRESS_THRESHOLD_MS)) {
-      if (currentVehicleState == VEHICLE_IDLE) {
+    if (!longPressActionTriggered && (currentTime - authButtonPressStartTime >= LONG_PRESS_THRESHOLD_MS))
+    {
+      if (currentVehicleState == VEHICLE_IDLE)
+      {
         currentVehicleState = VEHICLE_WAITING_FOR_GATE_SCAN;
         logMessage("3-second hold detected: Entering WAITING_FOR_GATE_SCAN mode...", 0, settings.logLevel);
       }
       longPressActionTriggered = true; // Eylemin tetiklendiğini işaretle ki tekrar çalışmasın
     }
-    
-  } 
+  }
   // Buton basılı değilse (bırakılmışsa)...
-  else {
+  else
+  {
     // Eğer buton AZ ÖNCE bırakıldıysa
-    if (authButtonPressed) {
+    if (authButtonPressed)
+    {
       unsigned long pressDuration = currentTime - authButtonPressStartTime;
       logMessage("Auth button released. Duration: " + String(pressDuration) + "ms", 0, settings.logLevel);
 
       // Eğer buton bırakıldığında uzun basış eylemi HİÇ tetiklenmediyse, bu bir kısa basıştır.
-      if (!longPressActionTriggered) {
+      if (!longPressActionTriggered)
+      {
         logMessage("SHORT PRESS: Attempting to send SECURE_COMMAND 'OPEN'", 0, settings.logLevel);
         sendSecureCommand("OPEN");
       }
-      
+
       // Buton durumunu bir sonraki basış için sıfırla
       authButtonPressed = false;
     }
   }
 
   // --- Seri Monitörden Gelen Manuel Komutlar ---
-  if (Serial.available()) {
+  if (Serial.available())
+  {
     String input = Serial.readStringUntil('\n');
     input.trim();
-    
-    if (input == "open") {
+
+    if (input == "open")
+    {
       logMessage("Manual command: OPEN", 0, settings.logLevel);
       sendSecureCommand("OPEN");
-    } else if (input == "close") {
+    }
+    else if (input == "close")
+    {
       logMessage("Manual command: CLOSE", 0, settings.logLevel);
       sendSecureCommand("CLOSE");
     }

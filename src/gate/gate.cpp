@@ -48,6 +48,11 @@ const unsigned long AUTH_DURATION_MS = 300000; // 5 dakika yetki süresi
 const bool FORCE_AUTO_SCAN_ON_STARTUP = false; // true: otomatik başlar, false: sadece butonla başlar
 static bool autoScanTriggered = false; // Bu özelliğin sadece bir kez çalışmasını sağlar
 
+
+unsigned long lastAuthenticatedCommandTime = 0; // Son geçerli komutun zamanı
+unsigned long warningStartTime = 0; // <<< BU SATIRI EKLEYİN
+
+
 // Preferences (NVRAM) nesnesi
 Preferences preferences;
 
@@ -55,6 +60,7 @@ Preferences preferences;
 struct DeviceSettings {
   char deviceName[32];            // Cihazın adı (BLE reklamında ve seri monitörde kullanılır)
   int closeTimeout;               // Otomatik kapanma süresi (saniye)
+  int preCloseWarning;
   int openLimit;                  // Açık kalma süresi sınırı (saniye) - güvenlik için
   int logLevel;                   // 0 = INFO, 1 = VERBOSE
   bool authorizationRequired;     // Yetkilendirme gerekliliği
@@ -89,7 +95,7 @@ unsigned long lastSettingsChangeTime = 0; // Ayarların en son değiştiği zama
 const unsigned long SETTINGS_SAVE_DELAY = 5000; // Ayarları kaydetmek için bekleme süresi (ms)
 bool isDeviceNameChanged = false; // Cihaz adının değişip değişmediğini kontrol eden bayrak
 bool shouldBeep = false; // Motor hareket halindeyken bip sesini kontrol eder
-volatile bool g_pairingComplete = false;
+
 
 // Beacon yayını için zamanlama değişkenleri
 unsigned long lastBeaconTime = 0;
@@ -159,6 +165,8 @@ void loadSettings() {
   }
 
   settings.closeTimeout = preferences.getInt("closeTimeout", 30);
+    settings.preCloseWarning = preferences.getInt("preCloseWarn", 5);
+
   settings.openLimit = preferences.getInt("openLimit", 300);
   settings.logLevel = preferences.getInt("logLevel", DEFAULT_LOG_LEVEL_INFO);
   settings.authorizationRequired = preferences.getBool("authReq", true);
@@ -172,6 +180,8 @@ void saveSettings() {
 
   preferences.putString("deviceName", settings.deviceName);
   preferences.putInt("closeTimeout", settings.closeTimeout);
+    preferences.putInt("preCloseWarn", settings.preCloseWarning);
+
   preferences.putInt("openLimit", settings.openLimit);
   preferences.putInt("logLevel", settings.logLevel);
   preferences.putBool("authReq", settings.authorizationRequired);
@@ -336,50 +346,73 @@ void stateMachineTask(void *pvParameters) {
   while (true) {
     unsigned long currentTime = millis();
 
-    if (currentState == GATE_IDLE_OPEN) {
-      if (isAutoCloseScheduled && (currentTime >= autoCloseScheduledTime)) {
-        logMessage("Auto-close triggered.", 0, settings.logLevel);
-        currentState = GATE_CLOSING;
-        triggerMotor(false);
-        shouldBeep = true;
-        updateLights();
-        isAutoCloseScheduled = false;
-        preCloseWarnLogged = false;
-      } else if (!isAutoCloseScheduled && (currentTime - stateChangeTime >= (settings.openLimit * 1000UL))) {
-        if (!preCloseWarnLogged) {
-            logMessage("Open limit reached. Pre-close warning issued.", 0, settings.logLevel);
-            preCloseWarnLogged = true;
-            LedPattern p = {100, 5};
-            xQueueSend(ledQueue, &p, 0);
-            digitalWrite(BUZZER_PIN, BUZZER_ON);
-            vTaskDelay(pdMS_TO_TICKS(500));
-            digitalWrite(BUZZER_PIN, BUZZER_OFF);
+    // Ana durum makinesi
+    switch (currentState) {
+      
+      case GATE_IDLE_OPEN:
+        // --- Kapı açık ve boşta bekleme durumu ---
+        shouldBeep = false;
+        
+        // 1. Sinyal Kaybı Kontrolü: Araçtan gelen sinyal kesildi mi?
+        if (lastAuthenticatedCommandTime > 0 && (currentTime - lastAuthenticatedCommandTime > (settings.closeTimeout * 1000UL))) {
+          logMessage("Loss of signal detected. Starting pre-close warning.", 0, settings.logLevel);
+          currentState = GATE_WARNING;    // Durumu "Uyarı" yap
+          warningStartTime = currentTime; // Uyarı başlangıç zamanını kaydet
         }
-        if (currentTime - stateChangeTime >= ((settings.openLimit * 1000UL) + 5000UL)) {
-          logMessage("Open limit exceeded. Closing gate.", 0, settings.logLevel);
-          currentState = GATE_CLOSING;
-          triggerMotor(false);
-          shouldBeep = true;
-          updateLights();
-          isAutoCloseScheduled = false;
-          preCloseWarnLogged = false;
+        // 2. Güvenlik Limiti Kontrolü: Kapı çok uzun süredir mi açık?
+        else if (currentTime - stateChangeTime >= (settings.openLimit * 1000UL)) {
+            logMessage("Open limit reached. Starting pre-close warning.", 0, settings.logLevel);
+            currentState = GATE_WARNING;    // Durumu "Uyarı" yap
+            warningStartTime = currentTime; // Uyarı başlangıç zamanını kaydet
         }
-      } else if (isAutoCloseScheduled && (autoCloseScheduledTime - currentTime <= 5000) && !preCloseWarnLogged) {
-        logMessage("Gate closing in less than 5 seconds.", 0, settings.logLevel);
-        LedPattern p = {100, 5};
-        xQueueSend(ledQueue, &p, 0);
-        digitalWrite(BUZZER_PIN, BUZZER_ON);
-        vTaskDelay(pdMS_TO_TICKS(500));
-        digitalWrite(BUZZER_PIN, BUZZER_OFF);
-      }
+        break;
+
+      case GATE_WARNING:
+        // --- Kapanma Öncesi Uyarı Durumu ---
+        
+        // Uyarı süresi boyunca ışığı ve buzzer'ı çalıştır
+        digitalWrite(RED_PIN, (currentTime % 1000 < 500) ? LIGHT_ON : LIGHT_OFF);
+        digitalWrite(BUZZER_PIN, (currentTime % 1000 < 100) ? BUZZER_ON : BUZZER_OFF);
+
+        // Uyarı süresi doldu mu?
+        if (currentTime - warningStartTime > (settings.preCloseWarning * 1000UL)) {
+          logMessage("Pre-close warning finished. Closing gate.", 0, settings.logLevel);
+          currentState = GATE_CLOSING;      // Artık kapıyı kapat
+          triggerMotor(false);              // Motoru tetikle
+          updateLights();                   // Sabit kırmızı ışığı yak
+          lastAuthenticatedCommandTime = 0; // Zamanlayıcıyı sıfırla
+        }
+        break;
+
+      case GATE_OPENING:
+      case GATE_CLOSING:
+        // --- Kapı Hareket Halindeyken ---
+        shouldBeep = true; // Motor çalışırken sürekli bip sesi çal
+        
+        // Güvenlik: Motorun çok uzun süre çalışıp sıkışmasını önle
+        if (currentTime - stateChangeTime >= (settings.openLimit * 1000UL)){
+            logMessage("Motor run-time limit exceeded. Stopping motor.", 0, settings.logLevel);
+            stopMotor(false);
+            currentState = GATE_IDLE_OPEN; // Hata durumunda kapıyı açık bırak
+            updateLights();
+        }
+        break;
+
+      case GATE_CLOSED:
+        // --- Kapı Kapalı Durumu ---
+        shouldBeep = false;
+        // Bir şey yapma
+        break;
     }
 
+    // Sürekli bip sesi gerektiren durumlar için (örn: motor hareketi)
     if (shouldBeep) {
       digitalWrite(BUZZER_PIN, BUZZER_ON);
-    } else {
+    } else if (currentState != GATE_WARNING) { // Uyarı durumunun kendi buzzer mantığı var
       digitalWrite(BUZZER_PIN, BUZZER_OFF);
     }
 
+    // Görevin diğer görevlere zaman tanıması için kısa bir bekleme
     vTaskDelay(pdMS_TO_TICKS(100));
   }
 }
@@ -478,7 +511,7 @@ void OnDataRecv(const uint8_t *mac_addr, const uint8_t *incomingData, int len) {
         esp_now_del_peer(mac_addr);
         logMessage("Temporary peer " + vehicleMac + " deleted.", 1, settings.logLevel);
       
-        g_pairingComplete = true;
+        //g_pairingComplete = true;
         currentAuthMode = AUTH_IDLE;
         pendingVehicleMac = "";
         pendingEncryptedKey = "";
@@ -506,6 +539,8 @@ void OnDataRecv(const uint8_t *mac_addr, const uint8_t *incomingData, int len) {
 
     if (expectedHmac.equals(String(receivedHmac))) {
         logMessage("HMAC SUCCESS! Secure command: " + String(command), 0, settings.logLevel);
+                lastAuthenticatedCommandTime = millis(); // <<< YENİ SATIR: Zamanlayıcıyı sıfırla
+
         // BURAYA MEVCUT KOMUT İŞLEME MANTIĞINIZI KOYUN (Kapı açma, kapama vs.)
         // Örnek: handleCommand(command);
     } else {
@@ -550,6 +585,8 @@ void setup() {
 
   loadRegisteredDevices();
   printRegisteredDevices(); 
+
+
 
 
   // WiFi'yi istasyon moduna ayarla
@@ -650,7 +687,7 @@ void loop() {
     if (currentAuthMode == AUTH_IDLE) {
       currentAuthMode = AUTH_SCANNING;
       scanModeEndTime = currentTime + SCAN_DURATION_MS;
-      g_pairingComplete = false;
+      //g_pairingComplete = false;
       lastScanBroadcastTime = 0; 
       logMessage("FORCED AUTO-SCAN: Entering SCANNING mode...", 0, settings.logLevel);
     }
@@ -680,7 +717,7 @@ void loop() {
       if (currentAuthMode == AUTH_IDLE) {
         currentAuthMode = AUTH_SCANNING;
         scanModeEndTime = currentTime + SCAN_DURATION_MS;
-        g_pairingComplete = false;
+        //g_pairingComplete = false;
         lastScanBroadcastTime = 0;
         logMessage("3-second hold detected: Entering SCANNING mode...", 0, settings.logLevel);
       }
@@ -747,12 +784,16 @@ void loop() {
 
     case AUTH_IDLE:
       // Boşta modundaysak...
-      if (g_pairingComplete) { // Eşleşme tamamlandıysa ve en az bir cihaz kayıtlıysa normal beacon yayını yap
-        if (!registeredDevices.empty() && (currentTime - lastBeaconTime > BEACON_INTERVAL_MS)) {
+      
+      if (!registeredDevices.empty()) { 
+        if (currentTime - lastBeaconTime > BEACON_INTERVAL_MS) {
             sendBeaconBroadcast();
             lastBeaconTime = currentTime;
         }
       }
+      
+
+      
       // Eşleşme bekleniyorsa hiçbir şey yapma.
       break;
   }
