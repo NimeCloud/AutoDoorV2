@@ -28,7 +28,7 @@ const unsigned long AUTH_DURATION_MS = 300000; // 5 dakika yetki süresi
   #define BUZZER_PIN 27
   #define OPEN_PIN 4  // Motoru açmak için tetik pini
   #define CLOSE_PIN 5 // Motoru kapatmak için tetik pini
-  #define AUTH_BUTTON_PIN 21 // Yetkilendirme/Tarama butonu
+  #define AUTH_BUTTON_PIN 0 // Yetkilendirme/Tarama butonu
   #define LED_ON HIGH
   #define LED_OFF LOW
 #endif
@@ -45,7 +45,7 @@ const unsigned long AUTH_DURATION_MS = 300000; // 5 dakika yetki süresi
 #define DEFAULT_DEVICE_NAME_PREFIX "GATE_" // Varsayılan cihaz adı ön eki
 #define DEFAULT_LOG_LEVEL_INFO 0 // 0 = INFO, 1 = VERBOSE
 
-const bool FORCE_AUTO_SCAN_ON_STARTUP = true; // true: otomatik başlar, false: sadece butonla başlar
+const bool FORCE_AUTO_SCAN_ON_STARTUP = false; // true: otomatik başlar, false: sadece butonla başlar
 static bool autoScanTriggered = false; // Bu özelliğin sadece bir kez çalışmasını sağlar
 
 // Preferences (NVRAM) nesnesi
@@ -105,6 +105,7 @@ QueueHandle_t ledQueue;
 // Yetkilendirme Modu ve Durum Yönetimi
 unsigned long authButtonPressStartTime = 0;
 bool authButtonPressed = false; // Bu, dahili olarak buton durumunu tutar.
+bool longPressActionTriggered = false; // <<< YENİ SATIR: Uzun basış eyleminin tetiklendiğini işaretler
 const unsigned long LONG_PRESS_THRESHOLD_MS = 3000; // 3 saniye uzun basış eşiği (tarama modu için)
 unsigned long scanModeEndTime = 0;
 const unsigned long SCAN_DURATION_MS = 300000;       // 30 saniye tarama süresi
@@ -640,11 +641,10 @@ void sendBeaconBroadcast() {
 }
 
 
-
 void loop() {
   unsigned long currentTime = millis();
 
-  // --- YENİ: Başlangıçta Otomatik Tarama Tetikleyicisi ---
+  // --- Başlangıçta Otomatik Tarama Tetikleyicisi ---
   // Cihaz açıldıktan 3 saniye sonra, eğer ayarlanmışsa, otomatik olarak eşleşme moduna girer.
   if (FORCE_AUTO_SCAN_ON_STARTUP && !autoScanTriggered && currentTime >= 3000) {
     if (currentAuthMode == AUTH_IDLE) {
@@ -660,71 +660,73 @@ void loop() {
   // --- Ayarların Gerekirse Kaydedilmesi ---
   if (isSettingsChanged && (currentTime - lastSettingsChangeTime >= SETTINGS_SAVE_DELAY)) {
     saveSettings();
-    isSettingsChanged = false;
   }
 
-  // --- Sadeleştirilmiş Buton Yönetimi ---
-  // Sadece gerçek fiziksel butonu dinler.
+  // --- Yeni Buton Yönetim Mantığı ---
   bool isButtonPressed = (digitalRead(AUTH_BUTTON_PIN) == LOW);
 
-  // Butona yeni basıldıysa (önceden basılı değilken şimdi basılıysa)
-  if (isButtonPressed && !authButtonPressed) {
-    authButtonPressed = true;
-    authButtonPressStartTime = currentTime;
-    logMessage("Auth button pressed.", 0, settings.logLevel);
-  } 
-  // Buton bırakıldıysa (önceden basılıyken şimdi basılı değilse)
-  else if (!isButtonPressed && authButtonPressed) {
-    authButtonPressed = false;
-    unsigned long pressDuration = currentTime - authButtonPressStartTime;
-    logMessage("Auth button released. Duration: " + String(pressDuration) + "ms", 0, settings.logLevel);
+  // Buton basılı tutuluyorsa...
+  if (isButtonPressed) {
+    if (!authButtonPressed) {
+      // Butona YENİ basıldı (ilk an)
+      authButtonPressed = true;
+      longPressActionTriggered = false; // Her yeni basışta eylem bayrağını sıfırla
+      authButtonPressStartTime = currentTime;
+      logMessage("Auth button pressed.", 0, settings.logLevel);
+    }
 
-    // Uzun basış ise eşleşme modunu değiştirir
-    if (pressDuration >= LONG_PRESS_THRESHOLD_MS) {
+    // Buton 3 saniyedir basılı tutuluyorsa VE eylem daha önce tetiklenmediyse...
+    if (!longPressActionTriggered && (currentTime - authButtonPressStartTime >= LONG_PRESS_THRESHOLD_MS)) {
       if (currentAuthMode == AUTH_IDLE) {
         currentAuthMode = AUTH_SCANNING;
         scanModeEndTime = currentTime + SCAN_DURATION_MS;
         g_pairingComplete = false;
-        lastScanBroadcastTime = 0; // Zamanlayıcıyı sıfırla ki ilk yayın hemen yapılsın
-        logMessage("LONG PRESS: Entering SCANNING mode...", 0, settings.logLevel);
-      } else {
-        currentAuthMode = AUTH_IDLE; // Diğer modlardaysa (tarama veya teyit bekleme), işlemi iptal edip başa dön
-        logMessage("LONG PRESS: Action cancelled. Returning to IDLE.", 0, settings.logLevel);
+        lastScanBroadcastTime = 0;
+        logMessage("3-second hold detected: Entering SCANNING mode...", 0, settings.logLevel);
       }
+      longPressActionTriggered = true; // Eylemin tetiklendiğini işaretle
+    }
+  } 
+  // Buton basılı değilse (bırakılmışsa)...
+  else {
+    if (authButtonPressed) {
+      // Buton AZ ÖNCE bırakıldı
+      unsigned long pressDuration = currentTime - authButtonPressStartTime;
+      logMessage("Auth button released. Duration: " + String(pressDuration) + "ms", 0, settings.logLevel);
+
+      // Eğer bırakıldığında uzun basış eylemi tetiklenmediyse, bu bir kısa basıştır.
+      // Gate için kısa basışa bir eylem atamadık, o yüzden bir şey yapmıyoruz.
+      if (!longPressActionTriggered) {
+        logMessage("SHORT PRESS: No action defined for Gate.", 0, settings.logLevel);
+      }
+      
+      // Buton durumunu bir sonraki basış için sıfırla
+      authButtonPressed = false;
     }
   }
 
   // --- Ana Durum Makinesi (State Machine) ---
-  // Cihazın o anki moduna göre ilgili işlemi yap.
   switch (currentAuthMode) {
     
     case AUTH_SCANNING:
- 
-      
+      // Tarama modundaysak...
       if (currentTime >= scanModeEndTime) {
         logMessage("SCANNING mode timed out.", 0, settings.logLevel);
         currentAuthMode = AUTH_IDLE;
       } else if (currentTime - lastScanBroadcastTime >= BROADCAST_INTERVAL_MS) {
-        
+        // Belirtilen aralıklarla SCAN_REQUEST yayını yap.
         sendScanRequestBroadcast();
         lastScanBroadcastTime = currentTime;
-      } else {
-        
-        
       }
       break;
+
     case AUTH_SENDING_KEY:
       // Anahtar teslim modundaysak...
       if (currentTime - keySendStartTime > KEY_SEND_DURATION_MS) {
         logMessage("KEY_DELIVERY timeout for " + pendingVehicleMac + ". Pairing failed.", 0, settings.logLevel);
-
         uint8_t targetMac[6];
-        sscanf(pendingVehicleMac.c_str(), "%2hhx:%2hhx:%2hhx:%2hhx:%2hhx:%2hhx", 
-               &targetMac[0], &targetMac[1], &targetMac[2], &targetMac[3], &targetMac[4], &targetMac[5]);
+        sscanf(pendingVehicleMac.c_str(), "%2hhx:%2hhx:%2hhx:%2hhx:%2hhx:%2hhx", &targetMac[0], &targetMac[1], &targetMac[2], &targetMac[3], &targetMac[4], &targetMac[5]);
         esp_now_del_peer(targetMac);
-        logMessage("Temporary peer " + pendingVehicleMac + " deleted due to timeout.", 1, settings.logLevel);
-        
-
         registeredDevices.erase(pendingVehicleMac);
         saveRegisteredDevices();
         currentAuthMode = AUTH_IDLE;
@@ -737,8 +739,7 @@ void loop() {
         serializeJson(keyDoc, output);
         
         uint8_t targetMac[6];
-        sscanf(pendingVehicleMac.c_str(), "%2hhx:%2hhx:%2hhx:%2hhx:%2hhx:%2hhx", 
-               &targetMac[0], &targetMac[1], &targetMac[2], &targetMac[3], &targetMac[4], &targetMac[5]);
+        sscanf(pendingVehicleMac.c_str(), "%2hhx:%2hhx:%2hhx:%2hhx:%2hhx:%2hhx", &targetMac[0], &targetMac[1], &targetMac[2], &targetMac[3], &targetMac[4], &targetMac[5]);
         esp_now_send(targetMac, (const uint8_t*)output.c_str(), output.length());
         lastKeySendTime = currentTime;
       }

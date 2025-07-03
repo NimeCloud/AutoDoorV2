@@ -48,7 +48,7 @@ const char *buildTime = __TIME__;
 const unsigned long SCAN_DURATION_MS = 300000;
 
 // vehicle.cpp -> Global Değişkenler bölümüne ekleyin
-const bool FORCE_AUTO_SCAN_ON_STARTUP = true; // true: otomatik başlar, false: sadece butonla başlar
+const bool FORCE_AUTO_SCAN_ON_STARTUP = false; // true: otomatik başlar, false: sadece butonla başlar
 static bool autoScanTriggered = false; // Bu özelliğin sadece bir kez çalışmasını sağlar
 
 unsigned long startTime = 0;
@@ -100,6 +100,7 @@ volatile bool ledPulseRequested = false;
 
 bool authButtonPressed = false;
 unsigned long authButtonPressStartTime = 0;
+bool longPressActionTriggered = false;
 const unsigned long LONG_PRESS_THRESHOLD_MS = 3000;
 
 bool isAutoSendingActive = false;
@@ -752,13 +753,12 @@ void setup() {
 }
 
 
-// vehicle.cpp -> Mevcut loop fonksiyonunu silip bunu yapıştırın
-
 void loop() {
   unsigned long currentTime = millis();
 
-  // --- BAŞLANGIÇTA OTOMATİK TARAMA TETİKLEYİCİSİ ---
+  // --- Başlangıçta Otomatik Tarama Tetikleyicisi ---
   // Cihaz açıldıktan 3 saniye sonra, eğer ayarlanmışsa, otomatik olarak eşleşme moduna girer.
+  // Not: Bu blok, sizin isteğiniz üzerine, cihazda kayıtlı kapı olsa bile çalışır.
   if (FORCE_AUTO_SCAN_ON_STARTUP && !autoScanTriggered && currentTime >= 3000) {
     if (currentVehicleState == VEHICLE_IDLE) {
       currentVehicleState = VEHICLE_WAITING_FOR_GATE_SCAN;
@@ -773,35 +773,44 @@ void loop() {
     isSettingsChanged = false;
   }
 
-  // --- Sadeleştirilmiş Buton Yönetimi ---
-  bool currentAuthButtonState = (digitalRead(AUTH_BUTTON_PIN) == LOW);
+  // --- Yeni Buton Yönetim Mantığı ---
+  bool isButtonPressed = (digitalRead(AUTH_BUTTON_PIN) == LOW);
 
-  // Butona yeni basıldıysa
-  if (currentAuthButtonState && !authButtonPressed) {
-    authButtonPressed = true;
-    authButtonPressStartTime = currentTime;
-    logMessage("Auth button pressed.", 0, settings.logLevel);
-  } 
-  // Buton bırakıldıysa
-  else if (!currentAuthButtonState && authButtonPressed) {
-    authButtonPressed = false;
-    unsigned long pressDuration = currentTime - authButtonPressStartTime;
-    logMessage("Auth button released. Duration: " + String(pressDuration) + "ms", 0, settings.logLevel);
+  // Buton basılı tutuluyorsa...
+  if (isButtonPressed) {
+    // Eğer butona YENİ basıldıysa (ilk an)
+    if (!authButtonPressed) {
+      authButtonPressed = true;
+      longPressActionTriggered = false; // Her yeni basışta eylem bayrağını sıfırla
+      authButtonPressStartTime = currentTime;
+      logMessage("Auth button pressed.", 0, settings.logLevel);
+    }
 
-    // Uzun Basış: Eşleşme modunu başlatır veya iptal eder.
-    if (pressDuration >= LONG_PRESS_THRESHOLD_MS) {
+    // Buton 3 saniyedir basılı tutuluyorsa VE uzun basış eylemi daha önce tetiklenmediyse...
+    if (!longPressActionTriggered && (currentTime - authButtonPressStartTime >= LONG_PRESS_THRESHOLD_MS)) {
       if (currentVehicleState == VEHICLE_IDLE) {
         currentVehicleState = VEHICLE_WAITING_FOR_GATE_SCAN;
-        logMessage("LONG PRESS: Entering WAITING_FOR_GATE_SCAN mode...", 0, settings.logLevel);
-      } else {
-        currentVehicleState = VEHICLE_IDLE;
-        logMessage("LONG PRESS: Action cancelled. Returning to IDLE.", 0, settings.logLevel);
+        logMessage("3-second hold detected: Entering WAITING_FOR_GATE_SCAN mode...", 0, settings.logLevel);
       }
-    } 
-    // Kısa Basış: Güvenli komut gönderir.
-    else {
-      logMessage("SHORT PRESS: Attempting to send SECURE_COMMAND 'OPEN'", 0, settings.logLevel);
-      sendSecureCommand("OPEN");
+      longPressActionTriggered = true; // Eylemin tetiklendiğini işaretle ki tekrar çalışmasın
+    }
+    
+  } 
+  // Buton basılı değilse (bırakılmışsa)...
+  else {
+    // Eğer buton AZ ÖNCE bırakıldıysa
+    if (authButtonPressed) {
+      unsigned long pressDuration = currentTime - authButtonPressStartTime;
+      logMessage("Auth button released. Duration: " + String(pressDuration) + "ms", 0, settings.logLevel);
+
+      // Eğer buton bırakıldığında uzun basış eylemi HİÇ tetiklenmediyse, bu bir kısa basıştır.
+      if (!longPressActionTriggered) {
+        logMessage("SHORT PRESS: Attempting to send SECURE_COMMAND 'OPEN'", 0, settings.logLevel);
+        sendSecureCommand("OPEN");
+      }
+      
+      // Buton durumunu bir sonraki basış için sıfırla
+      authButtonPressed = false;
     }
   }
 
@@ -809,11 +818,16 @@ void loop() {
   if (Serial.available()) {
     String input = Serial.readStringUntil('\n');
     input.trim();
+    
     if (input == "open") {
       logMessage("Manual command: OPEN", 0, settings.logLevel);
       sendSecureCommand("OPEN");
+    } else if (input == "close") {
+      logMessage("Manual command: CLOSE", 0, settings.logLevel);
+      sendSecureCommand("CLOSE");
     }
+    // Buraya başka manuel komutlar ekleyebilirsiniz...
   }
 
-  vTaskDelay(pdMS_TO_TICKS(20));
+  vTaskDelay(pdMS_TO_TICKS(20)); // CPU'ya nefes aldır.
 }
