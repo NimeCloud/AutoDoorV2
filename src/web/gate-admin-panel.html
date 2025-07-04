@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="tr">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Gate Ünitesi Kontrol Paneli</title>
+    <style>
+        /* CSS stilleri vehicle paneli ile neredeyse aynı, buraya tekrar eklemiyorum */
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; margin: 0; padding: 20px; min-height: 100vh; display: flex; justify-content: center; align-items: center; text-align: center; flex-direction: column; background-color: #f0f2f5; }
+        .container { background: white; padding: 40px; border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.1); width: 100%; max-width: 450px; }
+        .screen { display: none; width: 100%; }
+        button, select { width: 100%; padding: 15px; background-color: #007AFF; color: white; border: none; cursor: pointer; font-size: 18px; font-weight: 500; border-radius: 10px; transition: background-color 0.3s ease; margin-bottom: 10px; }
+        button:hover, select:hover { background-color: #005ecb; }
+        .input-group { margin-bottom: 20px; text-align: left; }
+        .input-group label { display: block; margin-bottom: 5px; font-size: 16px; color: #333; }
+        .input-group input, .input-group select { width: calc(100% - 22px); padding: 10px; border: 1px solid #ddd; border-radius: 6px; font-size: 16px; }
+        .slider-wrapper { margin: 20px 0; }
+        .slider-wrapper .value { font-weight: bold; color: #007AFF; }
+        .device-name-display { font-size: 20px; font-weight: 600; margin-bottom: 20px; color: #1c1c1e; }
+        .toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background-color: rgba(0,0,0,0.75); color: white; padding: 12px 24px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.2); display: none; z-index: 1000; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div id="deviceNameDisplay" class="device-name-display" style="display: none;"></div>
+
+        <div id="connectScreen" class="screen" style="display: block;">
+            <button id="connectButton">Gate Cihazına Bağlan</button>
+        </div>
+
+        <div id="settingsScreen" class="screen">
+            <div class="input-group">
+                <label for="deviceNameInput">Cihaz Adı:</label>
+                <input type="text" id="deviceNameInput" value="" />
+            </div>
+             <div class="slider-wrapper">
+                <label for="closeTimeoutSlider">Otomatik Kapanma Süresi (Sinyal Kaybı): <span id="closeTimeoutValue" class="value">30</span>s</label>
+                <input type="range" id="closeTimeoutSlider" min="10" max="600" step="5" value="30" />
+            </div>
+             <div class="slider-wrapper">
+                <label for="preCloseWarningSlider">Kapanma Öncesi Uyarı Süresi: <span id="preCloseWarningValue" class="value">5</span>s</label>
+                <input type="range" id="preCloseWarningSlider" min="1" max="15" step="1" value="5" />
+            </div>
+            <div class.input-group">
+                 <label for="operationModeSelect">Çalışma Modu:</label>
+                 <select id="operationModeSelect">
+                     <option value="0">Normal (Otomatik)</option>
+                     <option value="1">Sürekli Açık Tut</option>
+                     <option value="2">Sürekli Kapalı Tut</option>
+                     <option value="3">Servis Dışı</option>
+                 </select>
+            </div>
+             <div class="input-group" style="margin-top: 20px;">
+                <label for="authRequiredCheckbox" style="display:inline-block;">Yetkilendirme Gerekli (Güvenli Mod):</label>
+                <input type="checkbox" id="authRequiredCheckbox" checked />
+            </div>
+
+            <button id="saveSettingsButton">Ayarları Kaydet</button>
+            <button id="disconnectButton" style="background-color: #607d8b;">Bağlantıyı Kes</button>
+        </div>
+    </div>
+    <div id="toast" class="toast"></div>
+
+    <script>
+    //<![CDATA[
+    // UUID'ler Vehicle paneli ile aynı
+    const GATE_SERVICE_UUID = "e3a1b2f0-5f4d-4c8a-bd2f-8e6a7f3b9c0d";
+    const CHAR_SETTINGS_UUID = "a1d2f3e4-5678-4b9a-b3c2-9d8e7f6a5b4c";
+    
+    let bleDevice;
+    let settingsCharacteristic;
+    let toastTimeout;
+
+    // UI Elementleri
+    const deviceNameDisplay = document.getElementById('deviceNameDisplay');
+    const connectButton = document.getElementById('connectButton');
+    const saveSettingsButton = document.getElementById('saveSettingsButton');
+    const disconnectButton = document.getElementById('disconnectButton');
+    
+    const deviceNameInput = document.getElementById('deviceNameInput');
+    const closeTimeoutSlider = document.getElementById('closeTimeoutSlider');
+    const closeTimeoutValue = document.getElementById('closeTimeoutValue');
+    const preCloseWarningSlider = document.getElementById('preCloseWarningSlider');
+    const preCloseWarningValue = document.getElementById('preCloseWarningValue');
+    const operationModeSelect = document.getElementById('operationModeSelect');
+    const authRequiredCheckbox = document.getElementById('authRequiredCheckbox');
+
+    // Event Listeners
+    connectButton.addEventListener('click', connectToDevice);
+    disconnectButton.addEventListener('click', disconnectFromDevice);
+    saveSettingsButton.addEventListener('click', writeSettingsToDevice);
+    closeTimeoutSlider.addEventListener('input', e => closeTimeoutValue.innerText = e.target.value);
+    preCloseWarningSlider.addEventListener('input', e => preCloseWarningValue.innerText = e.target.value);
+    deviceNameInput.addEventListener('input', e => deviceNameDisplay.innerText = e.target.value);
+
+
+    function showScreen(screenId) {
+        document.querySelectorAll('.screen').forEach(s => s.style.display = 'none');
+        document.getElementById(screenId).style.display = 'block';
+    }
+
+    async function connectToDevice() {
+        try {
+            showToast("Cihaz aranıyor...");
+            bleDevice = await navigator.bluetooth.requestDevice({ filters: [{ services: [GATE_SERVICE_UUID] }] });
+            showToast("Cihaza bağlanılıyor...");
+            bleDevice.addEventListener('gattserverdisconnected', onDisconnected);
+            const server = await bleDevice.gatt.connect();
+            const service = await server.getPrimaryService(GATE_SERVICE_UUID);
+            settingsCharacteristic = await service.getCharacteristic(CHAR_SETTINGS_UUID);
+            
+            showToast(`${bleDevice.name || 'Bilinmeyen Cihaz'} bağlandı!`, "success");
+            deviceNameDisplay.style.display = 'block';
+            showScreen('settingsScreen');
+            await readCurrentSettings();
+        } catch (error) {
+            console.error("Bağlantı hatası:", error);
+            showToast("Cihaz bağlantısı kurulamadı.", "error");
+        }
+    }
+
+    async function disconnectFromDevice() {
+        if (bleDevice && bleDevice.gatt.connected) {
+            await bleDevice.gatt.disconnect();
+        }
+    }
+
+    function onDisconnected() {
+        showToast("Cihaz bağlantısı koptu.", "error");
+        showScreen('connectScreen');
+        deviceNameDisplay.style.display = 'none';
+    }
+
+    async function readCurrentSettings() {
+        try {
+            showToast("Mevcut ayarlar okunuyor...");
+            const value = await settingsCharacteristic.readValue();
+            const jsonString = new TextDecoder().decode(value);
+            console.log("Cihazdan okunan JSON:", jsonString);
+            const settings = JSON.parse(jsonString);
+
+            deviceNameInput.value = settings.deviceName || '';
+            deviceNameDisplay.innerText = settings.deviceName || 'GATE';
+            closeTimeoutSlider.value = settings.closeTimeout || 30;
+            closeTimeoutValue.innerText = settings.closeTimeout || 30;
+            preCloseWarningSlider.value = settings.preCloseWarning || 5;
+            preCloseWarningValue.innerText = settings.preCloseWarning || 5;
+            operationModeSelect.value = settings.opMode || 0;
+            authRequiredCheckbox.checked = settings.authReq !== false; // Varsayılan true
+            
+            showToast("Ayarlar yüklendi.", "success");
+        } catch (error) {
+            console.error("Ayarlar okunurken hata oluştu:", error);
+            showToast("Ayarlar okunamadı.", "error");
+        }
+    }
+
+    async function writeSettingsToDevice() {
+        try {
+            const settingsPayload = {
+                deviceName: deviceNameInput.value,
+                closeTimeout: parseInt(closeTimeoutSlider.value, 10),
+                preCloseWarning: parseInt(preCloseWarningSlider.value, 10),
+                opMode: parseInt(operationModeSelect.value, 10),
+                authReq: authRequiredCheckbox.checked
+            };
+
+            const jsonString = JSON.stringify(settingsPayload);
+            await settingsCharacteristic.writeValue(new TextEncoder().encode(jsonString));
+            showToast("Ayarlar cihaza gönderildi.", "success");
+        } catch (error) {
+            console.error("Ayarlar gönderilirken hata oluştu:", error);
+            showToast("Ayarlar gönderilemedi!", "error");
+        }
+    }
+
+    function showToast(message, type = "info") {
+        const toast = document.getElementById('toast');
+        toast.innerText = message;
+        toast.style.backgroundColor = type === "success" ? '#4CAF50' : (type === "error" ? '#f44336' : 'rgba(0,0,0,0.75)');
+        toast.style.display = 'block';
+        if (toastTimeout) clearTimeout(toastTimeout);
+        toastTimeout = setTimeout(() => { toast.style.display = 'none'; }, 3000);
+    }
+    //]]>
+    </script>
+</body>
+</html>

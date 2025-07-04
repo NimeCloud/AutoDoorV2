@@ -35,7 +35,9 @@
 // PSK (Pre-Shared Key) - Her iki cihazda da aynı olmalı
 const uint8_t PMK[] = {0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF, 0xFE, 0xDC, 0xBA, 0x98, 0x76, 0x54, 0x32, 0x10};
 
-#define SERVICE_UUID        "e3a1b2f0-5f4d-4c8a-bd2f-8e6a7f3b9c0d"
+#define GATE_SERVICE_UUID    "e3a1b2f0-5f4d-4c8a-bd2f-8e6a7f3b9c0d" // Gate için
+#define VEHICLE_SERVICE_UUID "b1c2d3e4-5f4d-4c8a-bd2f-8e6a7f3b9c0d" // Araç için (farklı)
+
 #define CHAR_SETTINGS_UUID  "a1d2f3e4-5678-4b9a-b3c2-9d8e7f6a5b4c"
 #define CHAR_PIN_AUTH_UUID  "b2c3d4e5-6789-4f0b-c1d2-a3b4c5d6e7f8" // Yeni PIN karakteristiği UUID'si
 #define CHAR_STATUS_UUID    "c3d4e5f6-7890-4a1c-b2d3-e4f5a6b7c8d9" // Yeni Durum/Bildirim karakteristiği UUID'si

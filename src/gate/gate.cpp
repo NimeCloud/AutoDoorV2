@@ -52,16 +52,6 @@ unsigned long warningStartTime = 0;             // <<< BU SATIRI EKLEYİN
 // Preferences (NVRAM) nesnesi
 Preferences preferences;
 
-// Cihaz Ayarları Yapısı
-struct DeviceSettings
-{
-  char deviceName[32]; // Cihazın adı (BLE reklamında ve seri monitörde kullanılır)
-  int closeTimeout;    // Otomatik kapanma süresi (saniye)
-  int preCloseWarning;
-  int openLimit;              // Açık kalma süresi sınırı (saniye) - güvenlik için
-  int logLevel;               // 0 = INFO, 1 = VERBOSE
-  bool authorizationRequired; // Yetkilendirme gerekliliği
-};
 
 // Durum Makinesi için Enum
 enum GateState
@@ -73,11 +63,33 @@ enum GateState
   GATE_WARNING // Kapanmadan önce uyarı durumu
 };
 
+// Yeni Çalışma Modları
+enum GateOperationMode {
+  MODE_NORMAL,        // Normal otomatik çalışma (araç sinyaline göre aç/kapat)
+  MODE_FORCE_OPEN,    // Sürekli Açık Tut (komutları yoksay)
+  MODE_FORCE_CLOSE,   // Sürekli Kapalı Tut (komutları yoksay)
+  MODE_DISABLED       // Motoru Durdur / Servis Modu (komutları yoksay)
+};
+
 // LED Görevi İçin Yapı (Queue Item)
 struct LedPattern
 {
   int duration; // Her flash'ın süresi (ms)
   int count;    // Flash sayısı
+};
+
+// Cihaz Ayarları Yapısı
+struct DeviceSettings
+{
+  char deviceName[32]; // Cihazın adı (BLE reklamında ve seri monitörde kullanılır)
+  int closeTimeout;    // Otomatik kapanma süresi (saniye)
+  int preCloseWarning;
+  int openLimit;              // Açık kalma süresi sınırı (saniye) - güvenlik için
+  int logLevel;               // 0 = INFO, 1 = VERBOSE
+  bool authorizationRequired; // Yetkilendirme gerekliliği
+  GateOperationMode operationMode; 
+  String pinCode;
+
 };
 
 // Global Değişkenler
@@ -94,6 +106,13 @@ unsigned long lastSettingsChangeTime = 0;       // Ayarların en son değiştiğ
 const unsigned long SETTINGS_SAVE_DELAY = 5000; // Ayarları kaydetmek için bekleme süresi (ms)
 bool isDeviceNameChanged = false;               // Cihaz adının değişip değişmediğini kontrol eden bayrak
 bool shouldBeep = false;                        // Motor hareket halindeyken bip sesini kontrol eder
+
+// BLE Karakteristikleri için global değişkenler
+BLECharacteristic *pSettingsChar;
+BLECharacteristic *pStatusChar; 
+BLECharacteristic *pPinAuthChar;
+
+
 
 // Beacon yayını için zamanlama değişkenleri
 unsigned long lastBeaconTime = 0;
@@ -146,10 +165,31 @@ void printSettingsToSerial()
 {
   logMessage("--- Device Settings ---", 0, settings.logLevel);
   logMessage("Device Name: " + String(settings.deviceName), 0, settings.logLevel);
-  logMessage("Auto-close Timeout: " + String(settings.closeTimeout) + "s", 0, settings.logLevel);
-  logMessage("Open Limit: " + String(settings.openLimit) + "s", 0, settings.logLevel);
-  logMessage("Log Level: " + String(settings.logLevel == 0 ? "INFO" : "VERBOSE"), 0, settings.logLevel), settings.logLevel;
+
+  // operationMode enum'unu okunabilir bir metne çevir
+  String opModeStr;
+  switch (settings.operationMode) {
+    case MODE_NORMAL:      opModeStr = "Normal (Automatic)"; break;
+    case MODE_FORCE_OPEN:  opModeStr = "Force Open"; break;
+    case MODE_FORCE_CLOSE: opModeStr = "Force Close"; break;
+    case MODE_DISABLED:    opModeStr = "Disabled"; break;
+    default:               opModeStr = "Unknown"; break;
+  }
+  logMessage("Operation Mode: " + opModeStr, 0, settings.logLevel);
+  
+  // Güvenlik ayarları
   logMessage("Authorization Required: " + String(settings.authorizationRequired ? "Yes" : "No"), 0, settings.logLevel);
+  // Güvenlik için PIN'in kendisi yerine sadece var olup olmadığını yazdır
+  logMessage("PIN Set: " + String(settings.pinCode.isEmpty() ? "No" : "Yes"), 0, settings.logLevel);
+  
+  // Zamanlama ayarları
+  logMessage("Auto-close Timeout (Signal Loss): " + String(settings.closeTimeout) + "s", 0, settings.logLevel);
+  logMessage("Pre-close Warning: " + String(settings.preCloseWarning) + "s", 0, settings.logLevel);
+  logMessage("Motor Run Limit: " + String(settings.openLimit) + "s", 0, settings.logLevel);
+
+  // Diğer ayarlar
+  logMessage("Log Level: " + String(settings.logLevel == 0 ? "INFO" : "VERBOSE"), 0, settings.logLevel);
+  
   logMessage("-----------------------", 0, settings.logLevel);
 }
 
@@ -174,6 +214,11 @@ void loadSettings()
   settings.logLevel = preferences.getInt("logLevel", DEFAULT_LOG_LEVEL_INFO);
   settings.authorizationRequired = preferences.getBool("authReq", true);
 
+    settings.operationMode = (GateOperationMode)preferences.getInt("opMode", MODE_NORMAL);
+    settings.pinCode = preferences.getString("pinCode", "");
+
+
+
   preferences.end();
   logMessage("Settings loaded from NVRAM.", 0, settings.logLevel);
 }
@@ -189,6 +234,11 @@ void saveSettings()
   preferences.putInt("openLimit", settings.openLimit);
   preferences.putInt("logLevel", settings.logLevel);
   preferences.putBool("authReq", settings.authorizationRequired);
+
+    preferences.putInt("opMode", settings.operationMode); 
+      preferences.putString("pinCode", settings.pinCode);
+
+
 
   preferences.end();
   isSettingsChanged = false;
@@ -281,6 +331,53 @@ void printRegisteredDevices()
   }
   logMessage("---------------------------------------", 0, settings.logLevel);
 }
+
+
+
+class MyCharacteristicCallbacks : public BLECharacteristicCallbacks {
+    void onRead(BLECharacteristic *pCharacteristic) {
+        JsonDocument jsonDoc;
+        jsonDoc["deviceName"] = settings.deviceName;
+        jsonDoc["closeTimeout"] = settings.closeTimeout;
+        jsonDoc["preCloseWarning"] = settings.preCloseWarning;
+        jsonDoc["openLimit"] = settings.openLimit;
+        jsonDoc["opMode"] = settings.operationMode;
+        jsonDoc["authReq"] = settings.authorizationRequired;
+        
+        String jsonString;
+        serializeJson(jsonDoc, jsonString);
+        pCharacteristic->setValue(jsonString.c_str());
+    }
+
+    void onWrite(BLECharacteristic *pCharacteristic) {
+        std::string value = pCharacteristic->getValue();
+        if (!value.empty()) {
+            JsonDocument jsonDoc;
+            deserializeJson(jsonDoc, value);
+
+           // Gelen JSON'dan ayarları oku ve settings nesnesini güncelle
+if (jsonDoc["deviceName"].is<const char*>()) {
+    strlcpy(settings.deviceName, jsonDoc["deviceName"], sizeof(settings.deviceName));
+}
+if (jsonDoc["closeTimeout"].is<int>()) {
+    settings.closeTimeout = jsonDoc["closeTimeout"];
+}
+if (jsonDoc["preCloseWarning"].is<int>()) {
+    settings.preCloseWarning = jsonDoc["preCloseWarning"];
+}
+if (jsonDoc["opMode"].is<int>()) {
+    settings.operationMode = (GateOperationMode)jsonDoc["opMode"].as<int>();
+}
+if (jsonDoc["authReq"].is<bool>()) {
+    settings.authorizationRequired = jsonDoc["authReq"];
+}
+            
+            isSettingsChanged = true; // Değişiklik olduğunu işaretle
+            lastSettingsChangeTime = millis();
+        }
+    }
+};
+
 
 // ========================= Motor ve Kapı Durumu Fonksiyonları =========================
 
@@ -378,87 +475,89 @@ void ledTask(void *pvParameters)
   }
 }
 
-void stateMachineTask(void *pvParameters)
-{
-  while (true)
-  {
+// gate.cpp -> Mevcut stateMachineTask fonksiyonunu silip bunu yapıştırın
+
+void stateMachineTask(void *pvParameters) {
+  while (true) {
     unsigned long currentTime = millis();
 
-    // Ana durum makinesi
-    switch (currentState)
-    {
+    // Ana kontrol: Cihazın genel çalışma moduna göre ne yapacağına karar ver.
+    switch (settings.operationMode) {
+      
+      case MODE_FORCE_OPEN:
+        // ZORUNLU AÇIK MODU: Kapı kapalıysa aç, açıksa açık bırak.
+        if (currentState != GATE_IDLE_OPEN && currentState != GATE_OPENING) {
+          logMessage("FORCE_OPEN mode active. Opening gate.", 0, settings.logLevel);
+          currentState = GATE_OPENING;
+          triggerMotor(true);
+          updateLights();
+        }
+        break;
 
-    case GATE_IDLE_OPEN:
-      // --- Kapı açık ve boşta bekleme durumu ---
-      shouldBeep = false;
+      case MODE_FORCE_CLOSE:
+        // ZORUNLU KAPALI MODU: Kapı açıksa kapat, kapalıysa kapalı bırak.
+        if (currentState != GATE_CLOSED && currentState != GATE_CLOSING) {
+          logMessage("FORCE_CLOSE mode active. Closing gate.", 0, settings.logLevel);
+          currentState = GATE_CLOSING;
+          triggerMotor(false);
+          updateLights();
+        }
+        break;
+      
+      case MODE_DISABLED:
+        // SERVİS DIŞI MODU: Motoru hemen durdur.
+        if (currentState == GATE_OPENING || currentState == GATE_CLOSING) {
+            logMessage("DISABLED mode active. Stopping motor.", 0, settings.logLevel);
+            stopMotor(true);
+            currentState = GATE_IDLE_OPEN; // Durduğu pozisyonu "açık" kabul edelim
+            updateLights();
+        }
+        break;
 
-      // 1. Sinyal Kaybı Kontrolü: Araçtan gelen sinyal kesildi mi?
-      if (lastAuthenticatedCommandTime > 0 && (currentTime - lastAuthenticatedCommandTime > (settings.closeTimeout * 1000UL)))
-      {
-        logMessage("Loss of signal detected. Starting pre-close warning.", 0, settings.logLevel);
-        currentState = GATE_WARNING;    // Durumu "Uyarı" yap
-        warningStartTime = currentTime; // Uyarı başlangıç zamanını kaydet
-      }
-      // 2. Güvenlik Limiti Kontrolü: Kapı çok uzun süredir mi açık?
-      else if (currentTime - stateChangeTime >= (settings.openLimit * 1000UL))
-      {
-        logMessage("Open limit reached. Starting pre-close warning.", 0, settings.logLevel);
-        currentState = GATE_WARNING;    // Durumu "Uyarı" yap
-        warningStartTime = currentTime; // Uyarı başlangıç zamanını kaydet
-      }
-      break;
+      case MODE_NORMAL:
+        // NORMAL OTOMATİK MOD: Sadece bu moddayken sinyal kesintisini ve limitleri kontrol et.
+        switch (currentState) {
+          case GATE_IDLE_OPEN:
+            // Sinyal kaybı veya openLimit zaman aşımlarını burada kontrol et
+            if ((lastAuthenticatedCommandTime > 0 && (currentTime - lastAuthenticatedCommandTime > (settings.closeTimeout * 1000UL))) || 
+                (currentTime - stateChangeTime >= (settings.openLimit * 1000UL))) {
+              
+              if (currentTime - stateChangeTime >= (settings.openLimit * 1000UL))
+                  logMessage("Open limit reached. Starting pre-close warning.", 0, settings.logLevel);
+              else
+                  logMessage("Loss of signal detected. Starting pre-close warning.", 0, settings.logLevel);
 
-    case GATE_WARNING:
-      // --- Kapanma Öncesi Uyarı Durumu ---
+              currentState = GATE_WARNING;
+              warningStartTime = currentTime;
+            }
+            break;
 
-      // Uyarı süresi boyunca ışığı ve buzzer'ı çalıştır
-      digitalWrite(RED_PIN, (currentTime % 1000 < 500) ? LIGHT_ON : LIGHT_OFF);
-      digitalWrite(BUZZER_PIN, (currentTime % 1000 < 100) ? BUZZER_ON : BUZZER_OFF);
-
-      // Uyarı süresi doldu mu?
-      if (currentTime - warningStartTime > (settings.preCloseWarning * 1000UL))
-      {
-        logMessage("Pre-close warning finished. Closing gate.", 0, settings.logLevel);
-        currentState = GATE_CLOSING;      // Artık kapıyı kapat
-        triggerMotor(false);              // Motoru tetikle
-        updateLights();                   // Sabit kırmızı ışığı yak
-        lastAuthenticatedCommandTime = 0; // Zamanlayıcıyı sıfırla
-      }
-      break;
-
-    case GATE_OPENING:
-    case GATE_CLOSING:
-      // --- Kapı Hareket Halindeyken ---
-      shouldBeep = true; // Motor çalışırken sürekli bip sesi çal
-
-      // Güvenlik: Motorun çok uzun süre çalışıp sıkışmasını önle
-      if (currentTime - stateChangeTime >= (settings.openLimit * 1000UL))
-      {
-        logMessage("Motor run-time limit exceeded. Stopping motor.", 0, settings.logLevel);
-        stopMotor(false);
-        currentState = (currentState == GATE_OPENING) ? GATE_IDLE_OPEN : GATE_CLOSED;
-        updateLights();
-      }
-      break;
-
-    case GATE_CLOSED:
-      // --- Kapı Kapalı Durumu ---
-      shouldBeep = false;
-      // Bir şey yapma
-      break;
+          case GATE_WARNING:
+            // Kapanma öncesi uyarı verme mantığı
+            digitalWrite(RED_PIN, (currentTime % 1000 < 500) ? LIGHT_ON : LIGHT_OFF);
+            digitalWrite(BUZZER_PIN, (currentTime % 1000 < 100) ? BUZZER_ON : BUZZER_OFF);
+            if (currentTime - warningStartTime > (settings.preCloseWarning * 1000UL)) {
+              logMessage("Pre-close warning finished. Closing gate.", 0, settings.logLevel);
+              currentState = GATE_CLOSING;
+              triggerMotor(false);
+              updateLights();
+              lastAuthenticatedCommandTime = 0;
+            }
+            break;
+            
+          // Diğer durumlar (OPENING, CLOSING, CLOSED) kendi içinde yönetiliyor veya bir şey yapmıyor.
+        }
+        break;
     }
 
-    // Sürekli bip sesi gerektiren durumlar için (örn: motor hareketi)
-    if (shouldBeep)
-    {
+    // Motor hareket halindeyken sürekli bip sesi (bu genel kontrol kalabilir)
+    shouldBeep = (currentState == GATE_OPENING || currentState == GATE_CLOSING);
+    if (shouldBeep) {
       digitalWrite(BUZZER_PIN, BUZZER_ON);
-    }
-    else if (currentState != GATE_WARNING)
-    { // Uyarı durumunun kendi buzzer mantığı var
+    } else if (currentState != GATE_WARNING) {
       digitalWrite(BUZZER_PIN, BUZZER_OFF);
     }
 
-    // Görevin diğer görevlere zaman tanıması için kısa bir bekleme
     vTaskDelay(pdMS_TO_TICKS(100));
   }
 }
@@ -535,6 +634,12 @@ void handleCommand(const char* command) {
 void OnDataRecv(const uint8_t *mac_addr, const uint8_t *incomingData, int len) {
 
 
+  if (settings.operationMode != MODE_NORMAL) {
+    logMessage("Ignoring incoming packet due to override mode.", 1, settings.logLevel);
+    LedPattern p_ack = {50, 3}; // 50ms, 1 kere
+    xQueueSend(ledQueue, &p_ack, 0);
+    return;
+  }
 
   String message = String((char *)incomingData, len);
   Serial.print("Data as String: ");
@@ -676,6 +781,69 @@ void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status)
   }
 }
 
+
+
+// gate.cpp -> setup()'dan önce bir yere ekleyin
+
+class MyServerCallbacks: public BLEServerCallbacks {
+    void onConnect(BLEServer* pServer) {
+      logMessage("BLE Client Connected.", 0, settings.logLevel);
+    }
+    void onDisconnect(BLEServer* pServer) {
+      logMessage("BLE Client Disconnected.", 0, settings.logLevel);
+      BLEDevice::startAdvertising();
+    }
+};
+
+class SettingsCharacteristicCallbacks: public BLECharacteristicCallbacks {
+    void onRead(BLECharacteristic *pCharacteristic) {
+        JsonDocument jsonDoc;
+        jsonDoc["deviceName"] = settings.deviceName;
+        jsonDoc["closeTimeout"] = settings.closeTimeout;
+        jsonDoc["preCloseWarning"] = settings.preCloseWarning;
+        jsonDoc["openLimit"] = settings.openLimit;
+        jsonDoc["opMode"] = settings.operationMode;
+        jsonDoc["authReq"] = settings.authorizationRequired;
+        
+        String jsonString;
+        serializeJson(jsonDoc, jsonString);
+        pCharacteristic->setValue(jsonString.c_str());
+        logMessage("Sent settings over BLE.", 1, settings.logLevel);
+    }
+
+    void onWrite(BLECharacteristic *pCharacteristic) {
+        std::string value = pCharacteristic->getValue();
+        if (!value.empty()) {
+            JsonDocument jsonDoc;
+            deserializeJson(jsonDoc, value);
+            logMessage("Received new settings via BLE.", 0, settings.logLevel);
+
+           if (jsonDoc["deviceName"].is<const char*>()) {
+    strlcpy(settings.deviceName, jsonDoc["deviceName"], sizeof(settings.deviceName));
+}
+if (jsonDoc["closeTimeout"].is<int>()) {
+    settings.closeTimeout = jsonDoc["closeTimeout"];
+}
+if (jsonDoc["preCloseWarning"].is<int>()) {
+    settings.preCloseWarning = jsonDoc["preCloseWarning"];
+}
+if (jsonDoc["openLimit"].is<int>()) {
+    settings.openLimit = jsonDoc["openLimit"];
+}
+if (jsonDoc["opMode"].is<int>()) {
+    settings.operationMode = (GateOperationMode)jsonDoc["opMode"].as<int>();
+}
+if (jsonDoc["authReq"].is<bool>()) {
+    settings.authorizationRequired = jsonDoc["authReq"];
+}
+
+            isSettingsChanged = true;
+            lastSettingsChangeTime = millis();
+            printSettingsToSerial(); // Yeni ayarları logla
+        }
+    }
+};
+
 // ========================= Kurulum ve Döngü =========================
 
 void setup()
@@ -707,6 +875,7 @@ void setup()
   // Override
   // settings.authorizationRequired = false;
   settings.logLevel = 1;
+  // settings.operationMode = MODE_DISABLED;
 
 
   loadRegisteredDevices();
@@ -746,6 +915,42 @@ void setup()
     return;
   }
   logMessage("Broadcast peer added.", 0, settings.logLevel);
+
+
+
+// --- YENİ BLE BAŞLATMA BLOĞU ---
+  logMessage("Initializing BLE...", 0, settings.logLevel);
+  BLEDevice::init(settings.deviceName);
+  BLEServer *pServer = BLEDevice::createServer();
+  pServer->setCallbacks(new MyServerCallbacks());
+
+  BLEService *pService = pServer->createService(GATE_SERVICE_UUID);
+
+  pSettingsChar = pService->createCharacteristic(
+                      CHAR_SETTINGS_UUID,
+                      BLECharacteristic::PROPERTY_READ |
+                      BLECharacteristic::PROPERTY_WRITE
+                    );
+  pSettingsChar->setCallbacks(new SettingsCharacteristicCallbacks());
+  
+  // Gate'de durum bildirimi için de bir karakteristik olabilir (opsiyonel)
+  pStatusChar = pService->createCharacteristic(
+                    CHAR_STATUS_UUID,
+                    BLECharacteristic::PROPERTY_NOTIFY
+                  );
+  pStatusChar->addDescriptor(new BLE2902());
+
+  pService->start();
+
+  BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
+  pAdvertising->addServiceUUID(GATE_SERVICE_UUID);
+  pAdvertising->setScanResponse(true);
+  BLEDevice::startAdvertising();
+  logMessage("BLE Service started. Advertising...", 0, settings.logLevel);
+  // ----------------------------------
+
+
+
 
   digitalWrite(INTERNAL_LED_PIN, LED_ON);
   delay(1000);

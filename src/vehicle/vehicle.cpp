@@ -837,7 +837,7 @@ void setup()
   BLEServer *pServer = BLEDevice::createServer();
   pServer->setCallbacks(new MyServerCallbacks());
 
-  BLEService *pService = pServer->createService(SERVICE_UUID);
+  BLEService *pService = pServer->createService(VEHICLE_SERVICE_UUID);
 
   pSettingsChar = pService->createCharacteristic(
       CHAR_SETTINGS_UUID,
@@ -859,7 +859,7 @@ void setup()
   pService->start();
 
   BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
-  pAdvertising->addServiceUUID(SERVICE_UUID);
+  pAdvertising->addServiceUUID(VEHICLE_SERVICE_UUID);
   pAdvertising->setScanResponse(true);
   pAdvertising->setMinPreferred(0x06);
   pAdvertising->setMinPreferred(0x12);
