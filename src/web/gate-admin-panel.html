@@ -5,7 +5,6 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Gate Ünitesi Kontrol Paneli</title>
     <style>
-        /* CSS stilleri vehicle paneli ile neredeyse aynı, buraya tekrar eklemiyorum */
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; margin: 0; padding: 20px; min-height: 100vh; display: flex; justify-content: center; align-items: center; text-align: center; flex-direction: column; background-color: #f0f2f5; }
         .container { background: white; padding: 40px; border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.1); width: 100%; max-width: 450px; }
         .screen { display: none; width: 100%; }
@@ -28,20 +27,29 @@
             <button id="connectButton">Gate Cihazına Bağlan</button>
         </div>
 
+        <div id="pinScreen" class="screen">
+            <p>Ayarlara erişmek için lütfen PIN girin:</p>
+            <div class="input-group">
+                <label for="pinInput">PIN:</label>
+                <input type="password" id="pinInput" maxlength="4" pattern="\d{4}" inputmode="numeric" />
+            </div>
+            <button id="submitPinButton">PIN'i Gönder</button>
+        </div>
+
         <div id="settingsScreen" class="screen">
             <div class="input-group">
                 <label for="deviceNameInput">Cihaz Adı:</label>
                 <input type="text" id="deviceNameInput" value="" />
             </div>
              <div class="slider-wrapper">
-                <label for="closeTimeoutSlider">Otomatik Kapanma Süresi (Sinyal Kaybı): <span id="closeTimeoutValue" class="value">30</span>s</label>
+                <label for="closeTimeoutSlider">Oto. Kapanma Süresi (Sinyal Kaybı): <span id="closeTimeoutValue" class="value">30</span>s</label>
                 <input type="range" id="closeTimeoutSlider" min="10" max="600" step="5" value="30" />
             </div>
              <div class="slider-wrapper">
                 <label for="preCloseWarningSlider">Kapanma Öncesi Uyarı Süresi: <span id="preCloseWarningValue" class="value">5</span>s</label>
                 <input type="range" id="preCloseWarningSlider" min="1" max="15" step="1" value="5" />
             </div>
-            <div class.input-group">
+            <div class="input-group">
                  <label for="operationModeSelect">Çalışma Modu:</label>
                  <select id="operationModeSelect">
                      <option value="0">Normal (Otomatik)</option>
@@ -51,10 +59,9 @@
                  </select>
             </div>
              <div class="input-group" style="margin-top: 20px;">
-                <label for="authRequiredCheckbox" style="display:inline-block;">Yetkilendirme Gerekli (Güvenli Mod):</label>
+                <label for="authRequiredCheckbox" style="display:inline-block;">Güvenli Mod (HMAC Gerekli):</label>
                 <input type="checkbox" id="authRequiredCheckbox" checked />
             </div>
-
             <button id="saveSettingsButton">Ayarları Kaydet</button>
             <button id="disconnectButton" style="background-color: #607d8b;">Bağlantıyı Kes</button>
         </div>
@@ -63,19 +70,21 @@
 
     <script>
     //<![CDATA[
-    // UUID'ler Vehicle paneli ile aynı
     const GATE_SERVICE_UUID = "e3a1b2f0-5f4d-4c8a-bd2f-8e6a7f3b9c0d";
     const CHAR_SETTINGS_UUID = "a1d2f3e4-5678-4b9a-b3c2-9d8e7f6a5b4c";
+    const CHAR_PIN_AUTH_UUID = "b2c3d4e5-6789-4f0b-c1d2-a3b4c5d6e7f8";
     
-    let bleDevice;
-    let settingsCharacteristic;
+    let bleDevice, settingsCharacteristic, pinAuthCharacteristic;
     let toastTimeout;
 
-    // UI Elementleri
     const deviceNameDisplay = document.getElementById('deviceNameDisplay');
     const connectButton = document.getElementById('connectButton');
     const saveSettingsButton = document.getElementById('saveSettingsButton');
     const disconnectButton = document.getElementById('disconnectButton');
+    const pinScreen = document.getElementById('pinScreen');
+    const settingsScreen = document.getElementById('settingsScreen');
+    const pinInput = document.getElementById('pinInput');
+    const submitPinButton = document.getElementById('submitPinButton');
     
     const deviceNameInput = document.getElementById('deviceNameInput');
     const closeTimeoutSlider = document.getElementById('closeTimeoutSlider');
@@ -85,15 +94,13 @@
     const operationModeSelect = document.getElementById('operationModeSelect');
     const authRequiredCheckbox = document.getElementById('authRequiredCheckbox');
 
-    // Event Listeners
     connectButton.addEventListener('click', connectToDevice);
     disconnectButton.addEventListener('click', disconnectFromDevice);
     saveSettingsButton.addEventListener('click', writeSettingsToDevice);
+    submitPinButton.addEventListener('click', submitPin);
     closeTimeoutSlider.addEventListener('input', e => closeTimeoutValue.innerText = e.target.value);
     preCloseWarningSlider.addEventListener('input', e => preCloseWarningValue.innerText = e.target.value);
-    deviceNameInput.addEventListener('input', e => deviceNameDisplay.innerText = e.target.value);
-
-
+    
     function showScreen(screenId) {
         document.querySelectorAll('.screen').forEach(s => s.style.display = 'none');
         document.getElementById(screenId).style.display = 'block';
@@ -108,50 +115,89 @@
             const server = await bleDevice.gatt.connect();
             const service = await server.getPrimaryService(GATE_SERVICE_UUID);
             settingsCharacteristic = await service.getCharacteristic(CHAR_SETTINGS_UUID);
+            pinAuthCharacteristic = await service.getCharacteristic(CHAR_PIN_AUTH_UUID);
             
-            showToast(`${bleDevice.name || 'Bilinmeyen Cihaz'} bağlandı!`, "success");
+            deviceNameDisplay.innerText = bleDevice.name || 'GATE';
             deviceNameDisplay.style.display = 'block';
-            showScreen('settingsScreen');
-            await readCurrentSettings();
+            await checkPinRequirement();
         } catch (error) {
             console.error("Bağlantı hatası:", error);
-            showToast("Cihaz bağlantısı kurulamadı.", "error");
+            showToast("Bağlantı kurulamadı.", "error");
+        }
+    }
+    
+async function disconnectFromDevice() {
+    if (bleDevice && bleDevice.gatt.connected) {
+        await bleDevice.gatt.disconnect();
+        // onDisconnected fonksiyonu bağlantı koptuğunda otomatik olarak çağrılacak
+    }
+}
+
+function onDisconnected() {
+    showToast("Cihaz bağlantısı koptu.", "error");
+    showScreen('connectScreen');
+    deviceNameDisplay.style.display = 'none';
+}
+
+    async function checkPinRequirement() {
+        try {
+            const value = await pinAuthCharacteristic.readValue();
+            const jsonString = new TextDecoder().decode(value);
+            const response = JSON.parse(jsonString);
+            if (response.pinRequired) {
+                showScreen('pinScreen');
+            } else {
+                showToast("PIN gerekli değil, ayarlar okunuyor...", "success");
+                await showSettingsAndRead();
+            }
+        } catch(error) {
+            showToast("PIN durumu okunamadı.", "error");
+        }
+    }
+    
+    async function submitPin() {
+        const pin = pinInput.value;
+        if (pin.length !== 4) { showToast("PIN 4 haneli olmalı.", "error"); return; }
+        try {
+            await pinAuthCharacteristic.writeValue(new TextEncoder().encode(pin));
+            // Cihazdan yanıt beklemiyoruz, doğrudan ayarları okumayı deniyoruz.
+            // Başarısız olursa readCurrentSettings'in catch bloğu çalışacak.
+            showToast("PIN gönderildi, ayarlar okunuyor...", "info");
+            await showSettingsAndRead();
+        } catch(error) {
+             showToast("PIN gönderilemedi.", "error");
         }
     }
 
-    async function disconnectFromDevice() {
-        if (bleDevice && bleDevice.gatt.connected) {
-            await bleDevice.gatt.disconnect();
-        }
-    }
-
-    function onDisconnected() {
-        showToast("Cihaz bağlantısı koptu.", "error");
-        showScreen('connectScreen');
-        deviceNameDisplay.style.display = 'none';
+    async function showSettingsAndRead() {
+        showScreen('settingsScreen');
+        await readCurrentSettings();
     }
 
     async function readCurrentSettings() {
         try {
-            showToast("Mevcut ayarlar okunuyor...");
             const value = await settingsCharacteristic.readValue();
             const jsonString = new TextDecoder().decode(value);
-            console.log("Cihazdan okunan JSON:", jsonString);
+            console.log("Okunan JSON:", jsonString);
             const settings = JSON.parse(jsonString);
-
+            if(settings.error) {
+                showToast("Yetki gerekli: " + settings.error, "error");
+                showScreen('pinScreen');
+                return;
+            }
+            
             deviceNameInput.value = settings.deviceName || '';
-            deviceNameDisplay.innerText = settings.deviceName || 'GATE';
             closeTimeoutSlider.value = settings.closeTimeout || 30;
             closeTimeoutValue.innerText = settings.closeTimeout || 30;
             preCloseWarningSlider.value = settings.preCloseWarning || 5;
             preCloseWarningValue.innerText = settings.preCloseWarning || 5;
             operationModeSelect.value = settings.opMode || 0;
-            authRequiredCheckbox.checked = settings.authReq !== false; // Varsayılan true
-            
-            showToast("Ayarlar yüklendi.", "success");
+            authRequiredCheckbox.checked = settings.authReq !== false;
+            showToast("Ayarlar başarıyla yüklendi.", "success");
         } catch (error) {
-            console.error("Ayarlar okunurken hata oluştu:", error);
-            showToast("Ayarlar okunamadı.", "error");
+            console.error("Ayarlar okunurken hata:", error);
+            showToast("Ayarlar okunamadı. PIN yanlış olabilir.", "error");
+            showScreen('pinScreen');
         }
     }
 
@@ -164,14 +210,19 @@
                 opMode: parseInt(operationModeSelect.value, 10),
                 authReq: authRequiredCheckbox.checked
             };
-
             const jsonString = JSON.stringify(settingsPayload);
             await settingsCharacteristic.writeValue(new TextEncoder().encode(jsonString));
-            showToast("Ayarlar cihaza gönderildi.", "success");
+            showToast("Ayarlar başarıyla gönderildi.", "success");
         } catch (error) {
-            console.error("Ayarlar gönderilirken hata oluştu:", error);
+            console.error("Ayarlar gönderilirken hata:", error);
             showToast("Ayarlar gönderilemedi!", "error");
         }
+    }
+
+    function onDisconnected() {
+        showToast("Cihaz bağlantısı koptu.", "error");
+        showScreen('connectScreen');
+        deviceNameDisplay.style.display = 'none';
     }
 
     function showToast(message, type = "info") {

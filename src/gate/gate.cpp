@@ -111,6 +111,7 @@ bool shouldBeep = false;                        // Motor hareket halindeyken bip
 BLECharacteristic *pSettingsChar;
 BLECharacteristic *pStatusChar; 
 BLECharacteristic *pPinAuthChar;
+bool isAuthenticated = false; 
 
 
 
@@ -844,6 +845,37 @@ if (jsonDoc["authReq"].is<bool>()) {
     }
 };
 
+// gate.cpp -> setup() fonksiyonundan önce uygun bir yere ekleyin
+
+class PinAuthCharacteristicCallbacks : public BLECharacteristicCallbacks {
+  void onWrite(BLECharacteristic *pCharacteristic) {
+    std::string value = pCharacteristic->getValue();
+    if (!value.empty()) {
+      // Eğer PIN ayarlı değilse veya gelen PIN doğruysa, kimliği doğrula
+      if (settings.pinCode.isEmpty() || value == settings.pinCode.c_str()) {
+        isAuthenticated = true;
+        logMessage("PIN auth successful!", 0, settings.logLevel);
+        // İsteğe bağlı: Başarı durumunu bildirimle gönder
+        // if(pStatusChar) pStatusChar->notify("AUTH_SUCCESS");
+      } else {
+        isAuthenticated = false;
+        logMessage("PIN auth FAILED!", 0, settings.logLevel);
+        // İsteğe bağlı: Hata durumunu bildirimle gönder
+        // if(pStatusChar) pStatusChar->notify("AUTH_FAILED");
+      }
+    }
+  }
+
+  void onRead(BLECharacteristic *pCharacteristic) {
+    // PIN gerekip gerekmediği bilgisini JSON olarak gönder
+    JsonDocument jsonDoc;
+    jsonDoc["pinRequired"] = !settings.pinCode.isEmpty();
+    String jsonString;
+    serializeJson(jsonDoc, jsonString);
+    pCharacteristic->setValue(jsonString.c_str());
+  }
+};
+
 // ========================= Kurulum ve Döngü =========================
 
 void setup()
@@ -918,38 +950,42 @@ void setup()
 
 
 
-// --- YENİ BLE BAŞLATMA BLOĞU ---
-  logMessage("Initializing BLE...", 0, settings.logLevel);
-  BLEDevice::init(settings.deviceName);
-  BLEServer *pServer = BLEDevice::createServer();
-  pServer->setCallbacks(new MyServerCallbacks());
+// --- BLE BAŞLATMA BLOĞU ---
+    logMessage("Initializing BLE...", 0, settings.logLevel);
+    BLEDevice::init(settings.deviceName);
+    BLEServer *pServer = BLEDevice::createServer();
+    pServer->setCallbacks(new MyServerCallbacks());
 
-  BLEService *pService = pServer->createService(GATE_SERVICE_UUID);
+    BLEService *pService = pServer->createService(GATE_SERVICE_UUID);
 
-  pSettingsChar = pService->createCharacteristic(
-                      CHAR_SETTINGS_UUID,
-                      BLECharacteristic::PROPERTY_READ |
-                      BLECharacteristic::PROPERTY_WRITE
+    // Ayarlar karakteristiği (bu zaten vardı)
+    pSettingsChar = pService->createCharacteristic(
+                        CHAR_SETTINGS_UUID,
+                        BLECharacteristic::PROPERTY_READ |
+                        BLECharacteristic::PROPERTY_WRITE
+                      );
+    pSettingsChar->setCallbacks(new SettingsCharacteristicCallbacks());
+    
+    // --- EKSİK OLAN VE EKLENMESİ GEREKEN BLOK ---
+    // PIN Doğrulama karakteristiğini oluştur ve servise ekle
+    pPinAuthChar = pService->createCharacteristic(
+                        CHAR_PIN_AUTH_UUID,
+                        BLECharacteristic::PROPERTY_READ |
+                        BLECharacteristic::PROPERTY_WRITE
+                      );
+    pPinAuthChar->setCallbacks(new PinAuthCharacteristicCallbacks());
+    // ---------------------------------------------
+
+    // Durum karakteristiği (bu zaten vardı)
+    pStatusChar = pService->createCharacteristic(
+                      CHAR_STATUS_UUID,
+                      BLECharacteristic::PROPERTY_NOTIFY
                     );
-  pSettingsChar->setCallbacks(new SettingsCharacteristicCallbacks());
-  
-  // Gate'de durum bildirimi için de bir karakteristik olabilir (opsiyonel)
-  pStatusChar = pService->createCharacteristic(
-                    CHAR_STATUS_UUID,
-                    BLECharacteristic::PROPERTY_NOTIFY
-                  );
-  pStatusChar->addDescriptor(new BLE2902());
+    pStatusChar->addDescriptor(new BLE2902());
 
-  pService->start();
+    pService->start();
 
-  BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
-  pAdvertising->addServiceUUID(GATE_SERVICE_UUID);
-  pAdvertising->setScanResponse(true);
-  BLEDevice::startAdvertising();
-  logMessage("BLE Service started. Advertising...", 0, settings.logLevel);
-  // ----------------------------------
-
-
+    
 
 
   digitalWrite(INTERNAL_LED_PIN, LED_ON);
