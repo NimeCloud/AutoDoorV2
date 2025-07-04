@@ -436,7 +436,7 @@ void stateMachineTask(void *pvParameters)
       {
         logMessage("Motor run-time limit exceeded. Stopping motor.", 0, settings.logLevel);
         stopMotor(false);
-        currentState = GATE_IDLE_OPEN; // Hata durumunda kapıyı açık bırak
+        currentState = (currentState == GATE_OPENING) ? GATE_IDLE_OPEN : GATE_CLOSED;
         updateLights();
       }
       break;
@@ -706,6 +706,8 @@ void setup()
 
   // Override
   // settings.authorizationRequired = false;
+  settings.logLevel = 1;
+
 
   loadRegisteredDevices();
   printRegisteredDevices();
