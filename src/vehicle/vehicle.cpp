@@ -123,9 +123,9 @@ void ledBlinkTask(void *parameter) {
     // 1. Öncelik: Cihaz tarama modunda mı?
     if (currentVehicleState == VEHICLE_WAITING_FOR_GATE_SCAN) {
       digitalWrite(INTERNAL_LED_PIN, LED_ON);
-      vTaskDelay(pdMS_TO_TICKS(500));
+      vTaskDelay(pdMS_TO_TICKS(1000));
       digitalWrite(INTERNAL_LED_PIN, LED_OFF);
-      vTaskDelay(pdMS_TO_TICKS(500));
+      vTaskDelay(pdMS_TO_TICKS(1000));
       continue; // Döngüye devam et ki başka bir şey çalışmasın
     }
 
@@ -675,6 +675,8 @@ void OnDataRecv(const uint8_t *mac_addr, const uint8_t *incomingData, int len)
     // AUTH_ACK mesajını oluştur ve gönder
     JsonDocument ackDoc;
     ackDoc["msgType"] = "AUTH_ACK";
+    ackDoc["deviceName"] = settings.deviceName; // <<< cihaz adını ekle
+
     char jsonBuffer[64];
     serializeJson(ackDoc, jsonBuffer);
     esp_now_send(mac_addr, (const uint8_t *)jsonBuffer, strlen(jsonBuffer));
@@ -708,6 +710,9 @@ void OnDataRecv(const uint8_t *mac_addr, const uint8_t *incomingData, int len)
       esp_now_send(mac_addr, (const uint8_t *)ackBuffer, strlen(ackBuffer));
 
       logMessage("Stored new key for " + gateMac + ". Sent KEY_ACK.", 0, settings.logLevel);
+
+      esp_now_del_peer(mac_addr);
+
 
       // Eşleşme tamamlandı, tarama modundan çık ve başarı LED'ini yak
       currentVehicleState = VEHICLE_IDLE;
@@ -762,7 +767,12 @@ void OnDataRecv(const uint8_t *mac_addr, const uint8_t *incomingData, int len)
 // ESP-NOW veri gönderildiğinde çağrılır
 void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status)
 {
-  logMessage("Last Packet to " + macToString(mac_addr) + " Send Status: " + (status == ESP_NOW_SEND_SUCCESS ? "Success" : "Fail"), 1, settings.logLevel);
+   logMessage("Last Packet to " + macToString(mac_addr) + " Send Status: " + (status == ESP_NOW_SEND_SUCCESS ? "Success" : "Fail"), 1, settings.logLevel);
+
+
+  if (status != ESP_NOW_SEND_SUCCESS) {
+    //logMessage("Last Packet to " + macToString(mac_addr) + " Send Status: Fail", 0, settings.logLevel);
+  }
 
   // Gönderim bittikten sonra, geçici olarak eklediğimiz peer'i sil.
   // Not: broadcast (FF:FF:..) adresini silmemeye dikkat et!
@@ -773,7 +783,7 @@ void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status)
 
   if (!isBroadcast)
   {
-    esp_now_del_peer(mac_addr);
+   //esp_now_del_peer(mac_addr);
   }
 }
 
@@ -786,12 +796,35 @@ void setup()
   digitalWrite(INTERNAL_LED_PIN, LED_OFF);
   pinMode(AUTH_BUTTON_PIN, INPUT_PULLUP);
 
+  digitalWrite(INTERNAL_LED_PIN, LED_ON);
+  delay(2000);
+  digitalWrite(INTERNAL_LED_PIN, LED_OFF);
+  delay(1000);
+
   // Ayarları ve kayıtlı mac id'leri yükle
   loadSettings();
   printSettingsToSerial();
 
   loadPairedGates();
   printPairedGates();
+
+  // LED kuyruğunu oluştur
+  ledQueue = xQueueCreate(10, sizeof(LedPattern));
+  if (ledQueue == NULL) {
+    logMessage("Failed to create LED queue", 0, settings.logLevel);
+  }
+
+  // LED görevini başlat
+  xTaskCreatePinnedToCore(
+      ledBlinkTask,
+      "LED Blink Task",
+      1024, // Stack size
+      NULL,
+      1,    // Priority
+      NULL, // Task handle
+      0     // Core
+  );
+
 
   // WiFi'yi istasyon moduna ayarla
   WiFi.mode(WIFI_STA);
@@ -866,28 +899,9 @@ void setup()
   BLEDevice::startAdvertising();
   Serial.println(getTimestamp() + " BLE server başladı, ayarlar bekleniyor...");
 
-  digitalWrite(INTERNAL_LED_PIN, LED_ON);
-  delay(1000);
-  digitalWrite(INTERNAL_LED_PIN, LED_OFF);
-  delay(1000);
+  
 
-   // LED kuyruğunu oluştur
-  ledQueue = xQueueCreate(10, sizeof(LedPattern));
-  if (ledQueue == NULL) {
-    logMessage("Failed to create LED queue", 0, settings.logLevel);
-  }
-
-  // LED görevini başlat
-  xTaskCreatePinnedToCore(
-      ledBlinkTask,
-      "LED Blink Task",
-      1024, // Stack size
-      NULL,
-      1,    // Priority
-      NULL, // Task handle
-      0     // Core
-  );
-
+  
   Serial.println(getTimestamp() + " Setup tamamlandı...");
 }
 

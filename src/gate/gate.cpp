@@ -52,6 +52,15 @@ unsigned long warningStartTime = 0;             // <<< BU SATIRI EKLEYİN
 // Preferences (NVRAM) nesnesi
 Preferences preferences;
 
+// Kayıtlı bir aracın tüm bilgilerini bir arada tutan struct
+struct RegisteredVehicleInfo {
+  String sharedKey;
+  String nickname;
+  String vehicleName;
+};
+
+std::map<String, RegisteredVehicleInfo> registeredDevices; 
+
 
 // Durum Makinesi için Enum
 enum GateState
@@ -111,6 +120,7 @@ bool shouldBeep = false;                        // Motor hareket halindeyken bip
 BLECharacteristic *pSettingsChar;
 BLECharacteristic *pStatusChar; 
 BLECharacteristic *pPinAuthChar;
+bool isAuthenticated = false; 
 
 
 
@@ -133,8 +143,6 @@ const unsigned long SCAN_DURATION_MS = 300000;    // 30 saniye tarama süresi
 const unsigned long BROADCAST_INTERVAL_MS = 1000; // Her 1 saniyede bir broadcast
 unsigned long lastScanBroadcastTime = 0;
 
-// Yetkilendirilmiş MAC adresleri listesi (Preferences'tan yüklenmeli)
-std::map<String, String> registeredDevices;
 
 // Eşleşme protokolü için yeni durumlar ve değişkenler
 enum AuthMode
@@ -245,65 +253,52 @@ void saveSettings()
   logMessage("Settings saved to NVRAM.", 0, settings.logLevel);
 }
 
-// gate.cpp -> saveRegisteredDevices fonksiyonunu bununla değiştirin
-void saveRegisteredDevices()
-{
+void saveRegisteredDevices() {
   preferences.begin("auth_list", false);
-
+  
   JsonDocument doc;
-  // Her zaman bir JSON dizisi oluştur
   JsonArray array = doc.to<JsonArray>();
+  
+  for (auto const& pair : registeredDevices) {
+    JsonObject device = array.add<JsonObject>();
+    device["mac"] = pair.first; // MAC adresi
+    device["key"] = pair.second.sharedKey; // Anahtar
+    device["nickname"] = pair.second.nickname; // Takma isim
+    device["vehicleName"] = pair.second.vehicleName; // <<< yeni
 
-  // Map'teki her bir [mac, key] çiftini bu diziye yeni bir nesne olarak ekle
-  for (auto const &pair : registeredDevices)
-  {
-    JsonObject device = array.add<JsonObject>(); // <<< ÖNEMLİ DEĞİŞİKLİK
-    device["mac"] = pair.first;
-    device["key"] = pair.second;
   }
-
+  
   String jsonOutput;
   serializeJson(doc, jsonOutput);
-
   preferences.putString("devices_json", jsonOutput);
-
+  
   preferences.end();
-  delay(100);
-  logMessage("jsonOutput: " + jsonOutput, 0, settings.logLevel);
   logMessage("Saved " + String(registeredDevices.size()) + " registered devices.", 0, settings.logLevel);
 }
 
-void loadRegisteredDevices()
-{
+void loadRegisteredDevices() {
   registeredDevices.clear();
   preferences.begin("auth_list", true);
 
-  // Kayıtlı JSON metnini oku
-  String jsonInput = preferences.getString("devices_json", "");
-  logMessage("jsonInput: " + jsonInput, 0, settings.logLevel);
-
-  if (jsonInput.length() > 0)
-  {
-    JsonDocument doc;
-    DeserializationError error = deserializeJson(doc, jsonInput);
-
-    if (!error)
-    {
-      JsonArray array = doc.as<JsonArray>();
-      // JSON dizisindeki her bir objeyi map'e geri yükle
-      for (JsonObject device : array)
-      {
-        String mac = device["mac"];
-        String key = device["key"];
-        registeredDevices[mac] = key;
-      }
-    }
-    else
-    {
-      logMessage("Failed to parse registered devices JSON.", 0, settings.logLevel);
+  String jsonInput = preferences.getString("devices_json", "[]"); // Varsayılan olarak boş dizi
+  
+  JsonDocument doc;
+  DeserializationError error = deserializeJson(doc, jsonInput);
+  
+  if (!error) {
+    JsonArray array = doc.as<JsonArray>();
+    for (JsonObject device : array) {
+      String mac = device["mac"];
+      
+      RegisteredVehicleInfo info;
+      info.sharedKey = device["key"].as<String>();
+      info.nickname = device["nickname"].as<String>();
+      info.vehicleName = device["vehicleName"].as<String>(); // <<< yeni
+      
+      registeredDevices[mac] = info;
     }
   }
-
+  
   preferences.end();
   logMessage("Loaded " + String(registeredDevices.size()) + " registered devices.", 0, settings.logLevel);
 }
@@ -313,26 +308,20 @@ bool isMacRegistered(const String &mac)
   return registeredDevices.count(mac) > 0;
 }
 
-void printRegisteredDevices()
-{
-  logMessage("--- Registered Devices (MAC -> Key) ---", 0, settings.logLevel);
-  if (registeredDevices.empty())
-  {
+void printRegisteredDevices() {
+  logMessage("--- Registered Devices (MAC -> Vehicle name | Nickname | Key) ---", 0, settings.logLevel);
+  if (registeredDevices.empty()) {
     logMessage("  No registered devices found.", 0, settings.logLevel);
-  }
-  else
-  {
-    for (auto const &pair : registeredDevices)
-    {                           // <-- Döngüyü bu şekilde değiştirin
-      String mac = pair.first;  // Anahtarı (key) .first ile alın
-      String key = pair.second; // Değeri (value) .second ile alın
-      logMessage("  - " + mac + " -> " + key.substring(0, 8) + "...", 0, settings.logLevel);
+  } else {
+    for (auto const& pair : registeredDevices) {
+      String mac = pair.first;
+      RegisteredVehicleInfo info = pair.second;
+      logMessage("  - " + mac + " -> " + info.vehicleName + " | " + info.nickname + " | " + info.sharedKey.substring(0, 8) + "...", 0, settings.logLevel);
+
     }
   }
-  logMessage("---------------------------------------", 0, settings.logLevel);
+  logMessage("-------------------------------------------------", 0, settings.logLevel);
 }
-
-
 
 class MyCharacteristicCallbacks : public BLECharacteristicCallbacks {
     void onRead(BLECharacteristic *pCharacteristic) {
@@ -378,6 +367,52 @@ if (jsonDoc["authReq"].is<bool>()) {
     }
 };
 
+
+
+class DeviceManagementCallbacks : public BLECharacteristicCallbacks {
+  void onRead(BLECharacteristic *pCharacteristic) {
+      // Bu karakteristiğe okuma isteği geldiğinde, kayıtlı cihaz listesini JSON olarak gönder.
+      JsonDocument doc;
+      JsonArray array = doc.to<JsonArray>();
+      for (auto const& pair : registeredDevices) {
+          JsonObject device = array.add<JsonObject>();
+          device["mac"] = pair.first;
+          device["nickname"] = pair.second.nickname;
+      }
+      String jsonString;
+      serializeJson(doc, jsonString);
+      pCharacteristic->setValue(jsonString.c_str());
+      logMessage("Sent device list over BLE.", 1, settings.logLevel);
+  }
+
+  void onWrite(BLECharacteristic *pCharacteristic) {
+      std::string value = pCharacteristic->getValue();
+      if (value.length() > 0) {
+          JsonDocument doc;
+          deserializeJson(doc, value);
+          
+          const char* action = doc["action"];
+          if (!action) return;
+
+          if (strcmp(action, "update_nickname") == 0) {
+              String mac = doc["mac"];
+              String nickname = doc["nickname"];
+              if (registeredDevices.count(mac)) {
+                  registeredDevices[mac].nickname = nickname;
+                  saveRegisteredDevices();
+                  logMessage("Updated nickname for " + mac, 0, settings.logLevel);
+              }
+          } else if (strcmp(action, "delete_device") == 0) {
+              String mac = doc["mac"];
+              if (registeredDevices.count(mac)) {
+                  registeredDevices.erase(mac);
+                  saveRegisteredDevices();
+                  logMessage("Deleted device " + mac, 0, settings.logLevel);
+              }
+          }
+      }
+  }
+};
 
 // ========================= Motor ve Kapı Durumu Fonksiyonları =========================
 
@@ -439,21 +474,23 @@ void updateLights()
 void ledTask(void *pvParameters)
 {
   LedPattern currentPattern;
+  static unsigned long lastHeartbeatTime = 0;
+
   while (true)
   {
+    unsigned long currentTime = millis();
+
     // 1. Öncelik: Tarama modunu kontrol et
     if (currentAuthMode == AUTH_SCANNING)
     {
       digitalWrite(INTERNAL_LED_PIN, LED_ON);
-      vTaskDelay(pdMS_TO_TICKS(500));
+      vTaskDelay(pdMS_TO_TICKS(1000));
       digitalWrite(INTERNAL_LED_PIN, LED_OFF);
-      vTaskDelay(pdMS_TO_TICKS(500));
+      vTaskDelay(pdMS_TO_TICKS(1000));
       continue; // Tarama modunda kalmak için döngüye devam et
     }
 
     // 2. Öncelik: Kuyruktan gelen özel LED desenlerini kontrol et
-    // portMAX_DELAY yerine kısa bir timeout (örn: 20ms) kullan.
-    // Bu sayede görev bloklanmaz ve currentAuthMode değişikliğini yakalayabilir.
     if (xQueueReceive(ledQueue, &currentPattern, pdMS_TO_TICKS(20)) == pdPASS)
     {
       for (int i = 0; i < currentPattern.count; i++)
@@ -469,8 +506,17 @@ void ledTask(void *pvParameters)
     }
     else
     {
-      // Tarama modunda değilsek ve kuyrukta bir komut yoksa, LED'in kapalı olduğundan emin ol.
+      // 3. Idle durumunda LED kapalı tut
       digitalWrite(INTERNAL_LED_PIN, LED_OFF);
+
+      // 4. Heartbeat: 10 saniyede bir 50ms yan
+      if (currentTime - lastHeartbeatTime > 10000)
+      {
+        digitalWrite(INTERNAL_LED_PIN, LED_ON);
+        vTaskDelay(pdMS_TO_TICKS(50));
+        digitalWrite(INTERNAL_LED_PIN, LED_OFF);
+        lastHeartbeatTime = currentTime;
+      }
     }
   }
 }
@@ -689,8 +735,18 @@ void OnDataRecv(const uint8_t *mac_addr, const uint8_t *incomingData, int len) {
       
       char newSharedKeyHex[33];
       for(int i = 0; i < 16; i++) { sprintf(newSharedKeyHex + i * 2, "%02x", newSharedKey[i]); }
+
+      const char* incomingVehicleName = doc["deviceName"];
+      String vehicleNameStr = incomingVehicleName ? String(incomingVehicleName) : "Unknown";
       
-      registeredDevices[vehicleMac] = String(newSharedKeyHex);
+      RegisteredVehicleInfo newVehicle;
+      newVehicle.sharedKey = String(newSharedKeyHex);
+      newVehicle.nickname = vehicleNameStr; // ilk başta nickname'i de araç ismi yap
+      newVehicle.vehicleName = vehicleNameStr; // orijinal araç ismi sakla
+
+      registeredDevices[vehicleMac] = newVehicle; 
+
+
       saveRegisteredDevices();
       
       // Anahtarı şifreleyip gönderme moduna geç
@@ -715,7 +771,7 @@ void OnDataRecv(const uint8_t *mac_addr, const uint8_t *incomingData, int len) {
         pendingVehicleMac = "";
         pendingEncryptedKey = "";
         
-        LedPattern p = {5000, 1}; xQueueSend(ledQueue, &p, 0); // Başarı sinyali
+        LedPattern p = {10000, 1}; xQueueSend(ledQueue, &p, 0); // Başarı sinyali
     }
   } 
 
@@ -749,7 +805,7 @@ void OnDataRecv(const uint8_t *mac_addr, const uint8_t *incomingData, int len) {
         return;
       }
       
-      String sharedKeyHex = registeredDevices[vehicleMac];
+      String sharedKeyHex = registeredDevices[vehicleMac].sharedKey;
       uint8_t sharedKey[16];
       for(int i=0; i<16; i++){ sscanf(sharedKeyHex.c_str() + i*2, "%2hhx", &sharedKey[i]); }
 
@@ -844,6 +900,37 @@ if (jsonDoc["authReq"].is<bool>()) {
     }
 };
 
+// gate.cpp -> setup() fonksiyonundan önce uygun bir yere ekleyin
+
+class PinAuthCharacteristicCallbacks : public BLECharacteristicCallbacks {
+  void onWrite(BLECharacteristic *pCharacteristic) {
+    std::string value = pCharacteristic->getValue();
+    if (!value.empty()) {
+      // Eğer PIN ayarlı değilse veya gelen PIN doğruysa, kimliği doğrula
+      if (settings.pinCode.isEmpty() || value == settings.pinCode.c_str()) {
+        isAuthenticated = true;
+        logMessage("PIN auth successful!", 0, settings.logLevel);
+        // İsteğe bağlı: Başarı durumunu bildirimle gönder
+        // if(pStatusChar) pStatusChar->notify("AUTH_SUCCESS");
+      } else {
+        isAuthenticated = false;
+        logMessage("PIN auth FAILED!", 0, settings.logLevel);
+        // İsteğe bağlı: Hata durumunu bildirimle gönder
+        // if(pStatusChar) pStatusChar->notify("AUTH_FAILED");
+      }
+    }
+  }
+
+  void onRead(BLECharacteristic *pCharacteristic) {
+    // PIN gerekip gerekmediği bilgisini JSON olarak gönder
+    JsonDocument jsonDoc;
+    jsonDoc["pinRequired"] = !settings.pinCode.isEmpty();
+    String jsonString;
+    serializeJson(jsonDoc, jsonString);
+    pCharacteristic->setValue(jsonString.c_str());
+  }
+};
+
 // ========================= Kurulum ve Döngü =========================
 
 void setup()
@@ -868,6 +955,12 @@ void setup()
   digitalWrite(OPEN_PIN, MOTOR_INACTIVE);
   digitalWrite(CLOSE_PIN, MOTOR_INACTIVE);
 
+  digitalWrite(INTERNAL_LED_PIN, LED_ON);
+  delay(2000);
+  digitalWrite(INTERNAL_LED_PIN, LED_OFF);
+  delay(1000);
+
+
   // Ayarları ve kayıtlı mac id'leri yükle
   loadSettings();
   printSettingsToSerial();
@@ -880,6 +973,38 @@ void setup()
 
   loadRegisteredDevices();
   printRegisteredDevices();
+
+  // LED kuyruğunu oluştur
+  ledQueue = xQueueCreate(10, sizeof(LedPattern));
+  if (ledQueue == NULL)
+  {
+    logMessage("Failed to create LED queue", 0, settings.logLevel);
+  }
+
+  // FreeRTOS görevlerini oluştur
+  xTaskCreatePinnedToCore(
+      ledTask,
+      "LED Task",
+      2048, // Stack size
+      NULL,
+      1, // Priority
+      &ledTaskHandle,
+      0 // Core
+  );
+
+  logMessage("LED Task added.", 0, settings.logLevel);
+
+  xTaskCreatePinnedToCore(
+    stateMachineTask,
+    "State Machine Task",
+    2048, // Stack size
+    NULL,
+    1, // Priority
+    &stateTaskHandle,
+    1 // Core
+);
+
+logMessage("State Machine Task added.", 0, settings.logLevel);
 
   // WiFi'yi istasyon moduna ayarla
   WiFi.mode(WIFI_STA);
@@ -918,76 +1043,63 @@ void setup()
 
 
 
-// --- YENİ BLE BAŞLATMA BLOĞU ---
-  logMessage("Initializing BLE...", 0, settings.logLevel);
-  BLEDevice::init(settings.deviceName);
-  BLEServer *pServer = BLEDevice::createServer();
-  pServer->setCallbacks(new MyServerCallbacks());
+// --- BLE BAŞLATMA BLOĞU ---
+    logMessage("Initializing BLE...", 0, settings.logLevel);
+    BLEDevice::init(settings.deviceName);
+    BLEServer *pServer = BLEDevice::createServer();
+    pServer->setCallbacks(new MyServerCallbacks());
 
-  BLEService *pService = pServer->createService(GATE_SERVICE_UUID);
+    BLEService *pService = pServer->createService(GATE_SERVICE_UUID);
 
-  pSettingsChar = pService->createCharacteristic(
-                      CHAR_SETTINGS_UUID,
-                      BLECharacteristic::PROPERTY_READ |
-                      BLECharacteristic::PROPERTY_WRITE
+    // Ayarlar karakteristiği (bu zaten vardı)
+    pSettingsChar = pService->createCharacteristic(
+                        CHAR_SETTINGS_UUID,
+                        BLECharacteristic::PROPERTY_READ |
+                        BLECharacteristic::PROPERTY_WRITE
+                      );
+    pSettingsChar->setCallbacks(new SettingsCharacteristicCallbacks());
+    
+    // --- EKSİK OLAN VE EKLENMESİ GEREKEN BLOK ---
+    // PIN Doğrulama karakteristiğini oluştur ve servise ekle
+    pPinAuthChar = pService->createCharacteristic(
+                        CHAR_PIN_AUTH_UUID,
+                        BLECharacteristic::PROPERTY_READ |
+                        BLECharacteristic::PROPERTY_WRITE
+                      );
+    pPinAuthChar->setCallbacks(new PinAuthCharacteristicCallbacks());
+
+
+    BLECharacteristic* pDeviceMgmtChar = pService->createCharacteristic(
+      CHAR_DEVICE_MGMT_UUID,
+      BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_WRITE
+    );
+pDeviceMgmtChar->setCallbacks(new DeviceManagementCallbacks());
+
+
+    // ---------------------------------------------
+
+    // Durum karakteristiği (bu zaten vardı)
+    pStatusChar = pService->createCharacteristic(
+                      CHAR_STATUS_UUID,
+                      BLECharacteristic::PROPERTY_NOTIFY
                     );
-  pSettingsChar->setCallbacks(new SettingsCharacteristicCallbacks());
+    pStatusChar->addDescriptor(new BLE2902());
+
+    pService->start();
+
+    BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
+    pAdvertising->addServiceUUID(GATE_SERVICE_UUID);
+    pAdvertising->setScanResponse(true);
+    pAdvertising->setMinPreferred(0x06); // iOS bağlantı sorunları için yardımcı olur
+    pAdvertising->setMinPreferred(0x12);
+    BLEDevice::startAdvertising();
+    logMessage("BLE Service started. Advertising...", 0, settings.logLevel);
+
+    
+
+
   
-  // Gate'de durum bildirimi için de bir karakteristik olabilir (opsiyonel)
-  pStatusChar = pService->createCharacteristic(
-                    CHAR_STATUS_UUID,
-                    BLECharacteristic::PROPERTY_NOTIFY
-                  );
-  pStatusChar->addDescriptor(new BLE2902());
-
-  pService->start();
-
-  BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
-  pAdvertising->addServiceUUID(GATE_SERVICE_UUID);
-  pAdvertising->setScanResponse(true);
-  BLEDevice::startAdvertising();
-  logMessage("BLE Service started. Advertising...", 0, settings.logLevel);
-  // ----------------------------------
-
-
-
-
-  digitalWrite(INTERNAL_LED_PIN, LED_ON);
-  delay(1000);
-  digitalWrite(INTERNAL_LED_PIN, LED_OFF);
-  delay(1000);
-
-  // LED kuyruğunu oluştur
-  ledQueue = xQueueCreate(10, sizeof(LedPattern));
-  if (ledQueue == NULL)
-  {
-    logMessage("Failed to create LED queue", 0, settings.logLevel);
-  }
-
-  // FreeRTOS görevlerini oluştur
-  xTaskCreatePinnedToCore(
-      ledTask,
-      "LED Task",
-      2048, // Stack size
-      NULL,
-      1, // Priority
-      &ledTaskHandle,
-      0 // Core
-  );
-
-  logMessage("LED Task added.", 0, settings.logLevel);
-
-  xTaskCreatePinnedToCore(
-      stateMachineTask,
-      "State Machine Task",
-      2048, // Stack size
-      NULL,
-      1, // Priority
-      &stateTaskHandle,
-      1 // Core
-  );
-
-  logMessage("State Machine Task added.", 0, settings.logLevel);
+  
 
   updateLights(); // Başlangıç ışık durumunu ayarla
 

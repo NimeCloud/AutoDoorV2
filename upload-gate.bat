@@ -1,3 +1,3 @@
 taskkill /IM serialportlistener.exe /F
 pio run -e gate -t upload
-E:\_CODE_\SerialPortListener\bin\Debug\net8.0\serialportlistener.exe
+\_CODE_\SerialPortListener\bin\Debug\net8.0\serialportlistener.exe
