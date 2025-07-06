@@ -202,9 +202,9 @@
                 </div>
                 <div class="input-group">
 
-                    <label for="newPinInput">Yeni PIN (4 haneli) | Sıfırlamak için boş bırakın:</label>
+                    <label for="newPinInput">PIN (Kaldırmak içinboş bırakın)</label>
                     <input type="text" id="newPinInput" maxlength="4" pattern="\d{0,4}" inputmode="numeric"
-                        placeholder="Değiştirmek için yeni PIN girin" />
+                        placeholder="Yeni PIN'i sadece değiştirecekseniz girin" />
                     <span id="pinStatus" style="font-size: 12px; margin-top: 5px; display: block;"></span>
                 </div>
 
@@ -434,10 +434,18 @@
                 ui.operationModeSelect.value = settings.opMode || 0;
                 ui.authRequiredCheckbox.checked = settings.authReq !== false;
 
-                ui.pinStatus.innerText = settings.pinExists ? "Mevcut bir PIN ayarlı." : "Cihazda PIN ayarlı değil.";
-                ui.pinStatus.style.color = settings.pinExists ? "#007AFF" : "#666";
-                ui.newPinInput.value = '';
-                isPinInputModified = false; // Ayarları okuduğumuzda bu bayrağı sıfırlayalım.
+                if (settings.pinExists) {
+                    ui.newPinInput.value = "****"; // Mevcut PIN'i gösterme, sadece maskele
+                    ui.newPinInput.placeholder = "Değiştirmek için yeni PIN girin";
+                    ui.pinStatus.innerText = "Cihaz PIN ile korunuyor.";
+                    ui.pinStatus.style.color = "#007AFF";
+                } else {
+                    ui.newPinInput.value = "";
+                    ui.newPinInput.placeholder = "Yeni bir PIN belirleyin (4 hane)";
+                    ui.pinStatus.innerText = "Cihazda PIN ayarlı değil.";
+                    ui.pinStatus.style.color = "#666";
+                }
+                isPinInputModified = false; // Bayrağı sıfırla
 
             } catch (error) {
                 console.error("Gate ayarları okunurken hata:", error);
@@ -457,30 +465,50 @@
                     authReq: ui.authRequiredCheckbox.checked
                 };
 
-                // --- YENİ EKLENEN PIN GÖNDERME MANTIĞI ---
-                // Sadece kullanıcı PIN kutusunu değiştirdiyse bu alanı JSON'a ekle
-                if (isPinInputModified) {
-                    const newPin = ui.newPinInput.value;
-                    // PIN ya boş olmalı (sıfırlama) ya da 4 haneli sayı olmalı
-                    if (newPin.length > 0 && (newPin.length !== 4 || !/^\d+$/.test(newPin))) {
-                        showToast("Yeni PIN 4 haneli sayı olmalı!", "error");
-                        return; // Geçersizse gönderme
-                    }
-                    payload.pinCode = newPin; // Payload'a pinCode'u ekle
-                }
-                // ---------------------------------------------
+                const newPin = ui.newPinInput.value;
+
+
+                
+
+                 // Kullanıcı PIN kutusunu değiştirmediyse (hala '****' ise), PIN ile ilgili bir şey yapma
+        if (newPin === '****') {
+            // PIN değiştirilmedi, payload'a ekleme.
+        } 
+        // Kullanıcı PIN'i silmek için kutuyu boşalttıysa
+        else if (newPin.length === 0) {
+            if (confirm("Mevcut PIN'i kalıcı olarak silmek istediğinizden emin misiniz?")) {
+                payload.pinCode = ""; // Cihaza PIN'i silmesi için boş string gönder
+                showToast("PIN sıfırlama isteği gönderildi.", "info");
+            } else {
+                // Kullanıcı vazgeçti, eski PIN'i geri yükle
+                readGateSettings();
+                return; // Gönderme işlemini durdur
+            }
+        }
+        // Kullanıcı yeni bir PIN girdiyse
+        else {
+            if (newPin.length !== 4 || !/^\d+$/.test(newPin)) {
+                showToast("Yeni PIN 4 haneli sayı olmalı!", "error");
+                return;
+            }
+            payload.pinCode = newPin; // Yeni PIN'i payload'a ekle
+            showToast("Yeni PIN ayarı gönderildi.", "info");
+        }
 
                 await settingsCharacteristic.writeValue(new TextEncoder().encode(JSON.stringify(payload)));
-                showToast("Gate ayarları kaydedildi.", "success");
 
-                // İşlem sonrası PIN alanını ve bayrağı sıfırla
-                ui.newPinInput.value = '';
-                isPinInputModified = false;
+                // Başarı mesajı için cihazdan gelen bildirimi beklemek daha doğru olur,
+                // ama şimdilik gönderim sonrası bir mesaj gösterelim.
+                showToast("Ayarlar cihaza gönderildi.", "success");
 
-                // PIN değişmiş olabileceğinden, güncel durumu tekrar oku
+                
+                // Ayarların güncel halini tekrar okuyarak arayüzü yenile
                 setTimeout(readGateSettings, 750);
 
-            } catch (error) { console.error("Gate ayarları kaydedilemedi:", error); }
+            } catch (error) {
+                console.error("Gate ayarları kaydedilemedi:", error);
+                showToast("Ayarlar kaydedilemedi.", "error");
+            }
         }
 
         // --- UI/Helper Functions ---
