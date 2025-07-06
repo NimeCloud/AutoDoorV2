@@ -9,7 +9,7 @@
 #define LED_ON LOW
 #define LED_OFF HIGH
 
-#define AUTH_BUTTON_PIN 21
+#define AUTH_BUTTON_PIN 9
 
 #elif CONFIG_IDF_TARGET_ESP32
 

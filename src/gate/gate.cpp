@@ -400,6 +400,8 @@ class DeviceManagementCallbacks : public BLECharacteristicCallbacks
       JsonObject device = array.add<JsonObject>();
       device["mac"] = pair.first;
       device["nickname"] = pair.second.nickname;
+              device["vehicleName"] = pair.second.vehicleName; // <<< YENİ SATIR
+
     }
     String jsonString;
     serializeJson(doc, jsonString);
