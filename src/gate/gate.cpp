@@ -927,15 +927,14 @@ class MyServerCallbacks : public BLEServerCallbacks
 
 class SettingsCharacteristicCallbacks : public BLECharacteristicCallbacks
 {
-  void onRead(BLECharacteristic *pCharacteristic)
-  {
-
-    if (!isAuthenticated && !settings.pinCode.isEmpty())
-    {
-      pCharacteristic->setValue("{\"error\":\"Authentication required\"}");
-      return;
+  void onRead(BLECharacteristic *pCharacteristic) {
+    // 1. Yetki Kontrolü
+    if (!isAuthenticated && !settings.pinCode.isEmpty()) {
+        pCharacteristic->setValue("{\"error\":\"Authentication required\"}");
+        return;
     }
 
+    // 2. Tüm Ayarları İçeren JSON'u Oluştur
     JsonDocument jsonDoc;
     jsonDoc["deviceName"] = settings.deviceName;
     jsonDoc["closeTimeout"] = settings.closeTimeout;
@@ -943,12 +942,14 @@ class SettingsCharacteristicCallbacks : public BLECharacteristicCallbacks
     jsonDoc["openLimit"] = settings.openLimit;
     jsonDoc["opMode"] = settings.operationMode;
     jsonDoc["authReq"] = settings.authorizationRequired;
+    jsonDoc["pinExists"] = !settings.pinCode.isEmpty(); // <<< EKSİK OLAN VE EKLENEN SATIR
 
+    // 3. JSON'u Panele Gönder
     String jsonString;
     serializeJson(jsonDoc, jsonString);
     pCharacteristic->setValue(jsonString.c_str());
-    logMessage("Sent settings over BLE.", 1, settings.logLevel);
-  }
+    logMessage("Sent full settings over BLE.", 1, settings.logLevel);
+}
 
   void onWrite(BLECharacteristic *pCharacteristic)
 {
@@ -1019,11 +1020,12 @@ class SettingsCharacteristicCallbacks : public BLECharacteristicCallbacks
 
     // PIN Kodu Değişikliği
     // Web paneli, sadece PIN değiştirilmek istendiğinde bu alanı gönderir.
-    if (jsonDoc.containsKey("pinCode")) {
+    // Check if the "pinCode" key exists and is not null in the incoming JSON
+    if (!jsonDoc["pinCode"].isNull()) { // <-- This is the corrected line
         String newPin = jsonDoc["pinCode"].as<String>();
         if (settings.pinCode != newPin) {
             settings.pinCode = newPin;
-            isAuthenticated = false; // PIN değiştiği için güvenlik gereği yetkiyi düşür.
+            isAuthenticated = false; // PIN changed, require re-authentication for security
             logMessage("Setting updated: PIN has been changed. Re-authentication required.", 0, settings.logLevel);
             anyChangeDetected = true;
         }
