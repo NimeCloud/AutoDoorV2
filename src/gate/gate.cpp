@@ -116,11 +116,18 @@ const unsigned long SETTINGS_SAVE_DELAY = 5000; // Ayarları kaydetmek için bek
 bool isDeviceNameChanged = false;               // Cihaz adının değişip değişmediğini kontrol eden bayrak
 bool shouldBeep = false;                        // Motor hareket halindeyken bip sesini kontrol eder
 
+struct SecurityState {
+  int pinFailedAttempts = 0;
+  unsigned long pinLockoutEndTime = 0;
+};
+SecurityState securityState; // Güvenlik durumunu yönetecek global nesne
+
 // BLE Karakteristikleri için global değişkenler
 BLECharacteristic *pSettingsChar;
 BLECharacteristic *pStatusChar;
 BLECharacteristic *pPinAuthChar;
 bool isAuthenticated = false;
+
 
 // Beacon yayını için zamanlama değişkenleri
 unsigned long lastBeaconTime = 0;
@@ -165,6 +172,20 @@ void addMacToRegistereds(const uint8_t *mac);
 bool isMacRegistered(const uint8_t *mac);
 
 // ========================= Yardımcı Fonksiyonlar =========================
+void saveSecurityState() {
+  preferences.begin("security", false); // "security" adında yeni bir alan aç (yazma)
+  preferences.putInt("fails", securityState.pinFailedAttempts);
+  preferences.putULong("lock_end", securityState.pinLockoutEndTime);
+  preferences.end();
+}
+
+void loadSecurityState() {
+  preferences.begin("security", true); // "security" alanını aç (okuma)
+  securityState.pinFailedAttempts = preferences.getInt("fails", 0);
+  securityState.pinLockoutEndTime = preferences.getULong("lock_end", 0);
+  preferences.end();
+  logMessage("Loaded security state: " + String(securityState.pinFailedAttempts) + " fails.", 1, settings.logLevel);
+}
 
 void printSettingsToSerial()
 {
@@ -1051,26 +1072,55 @@ class SettingsCharacteristicCallbacks : public BLECharacteristicCallbacks
 
 class PinAuthCharacteristicCallbacks : public BLECharacteristicCallbacks
 {
-  void onWrite(BLECharacteristic *pCharacteristic)
-  {
+  void onWrite(BLECharacteristic *pCharacteristic) {
+    // Kilitli olup olmadığımızı kontrol etmeden önce en güncel durumu oku
+    loadSecurityState(); 
+    
+    // 1. ADIM: Cihaz kilitli mi?
+    if (millis() < securityState.pinLockoutEndTime) {
+      long remainingSeconds = (securityState.pinLockoutEndTime - millis()) / 1000;
+      logMessage("Device is locked. Try again in " + String(remainingSeconds) + " seconds.", 0, settings.logLevel);
+      pStatusChar->setValue("AUTH_LOCKED");
+      pStatusChar->notify();
+      return;
+    }
+
     std::string value = pCharacteristic->getValue();
-    if (!value.empty())
-    {
-      // Eğer PIN ayarlı değilse veya gelen PIN doğruysa, kimliği doğrula
-      if (settings.pinCode.isEmpty() || value == settings.pinCode.c_str())
-      {
-        isAuthenticated = true;
-        logMessage("PIN auth successful!", 0, settings.logLevel);
-        // İsteğe bağlı: Başarı durumunu bildirimle gönder
-        if(pStatusChar) pStatusChar->notify("AUTH_SUCCESS");
+    if (value.empty()) return;
+
+    // 2. ADIM: PIN doğru mu?
+    if (!settings.pinCode.isEmpty() && value == settings.pinCode.c_str()) {
+      // PIN DOĞRU
+      logMessage("PIN auth successful!", 0, settings.logLevel);
+      isAuthenticated = true;
+      
+      // Hata sayacını ve kilidi sıfırla, sonra durumu KALICI OLARAK KAYDET
+      securityState.pinFailedAttempts = 0;
+      securityState.pinLockoutEndTime = 0;
+      saveSecurityState(); 
+      
+      pStatusChar->setValue("AUTH_SUCCESS");
+      pStatusChar->notify();
+    } else {
+      // PIN YANLIŞ
+      isAuthenticated = false;
+      securityState.pinFailedAttempts++;
+      logMessage("PIN auth FAILED! Attempt " + String(securityState.pinFailedAttempts), 0, settings.logLevel);
+      
+      // 3. ADIM: Kademeli kilitlemeyi uygula
+      if (securityState.pinFailedAttempts >= 10) {
+        securityState.pinLockoutEndTime = millis() + 900000; // 15 dakika
+      } else if (securityState.pinFailedAttempts >= 5) {
+        securityState.pinLockoutEndTime = millis() + 60000;  // 1 dakika
+      } else if (securityState.pinFailedAttempts >= 3) {
+        securityState.pinLockoutEndTime = millis() + 10000; // 10 saniye
       }
-      else
-      {
-        isAuthenticated = false;
-        logMessage("PIN auth FAILED!", 0, settings.logLevel);
-        // İsteğe bağlı: Hata durumunu bildirimle gönder
-        if(pStatusChar) pStatusChar->notify("AUTH_FAILED");
-      }
+      
+      // Yeni hata durumunu KALICI OLARAK KAYDET
+      saveSecurityState(); 
+      
+      pStatusChar->setValue("AUTH_FAILED");
+      pStatusChar->notify();
     }
   }
 
@@ -1125,6 +1175,8 @@ void setup()
 
   loadRegisteredDevices();
   printRegisteredDevices();
+
+  loadSecurityState(); 
 
   // LED kuyruğunu oluştur
   ledQueue = xQueueCreate(10, sizeof(LedPattern));

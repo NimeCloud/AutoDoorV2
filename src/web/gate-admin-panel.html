@@ -525,9 +525,9 @@ ui.authRequiredCheckbox.addEventListener('change', updateSecurityWarning);
                     ui.pinStatus.style.color = "#007AFF";
                 } else {
                     ui.newPinInput.value = "";
-                    ui.newPinInput.placeholder = "Yeni bir PIN belirleyin (4 hane)";
-                    ui.pinStatus.innerText = "Cihazda PIN ayarlı değil.";
-                    ui.pinStatus.style.color = "#666";
+                    ui.newPinInput.placeholder = "Yeni PIN (4 hane)";
+                   ui.pinStatus.innerText = "⚠️ PIN ayarlı değil! Herkes ayarlara erişebilir.";
+            ui.pinStatus.style.color = "#D32F2F"; // Dikkat çekici kırmızı renk
                 }
                 isPinInputModified = false; // Bayrağı sıfırla
 
