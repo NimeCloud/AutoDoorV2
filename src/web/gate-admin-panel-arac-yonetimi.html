@@ -232,7 +232,7 @@
         toast.style.display='block';
         toast.style.backgroundColor = type === "success" ? '#4CAF50' : (type === "error" ? '#f44336' : 'rgba(0,0,0,0.75)');
         if(toastTimeout) clearTimeout(toastTimeout);
-        toastTimeout = setTimeout(() => { toast.style.display = 'none'; }, 3000); 
+        toastTimeout = setTimeout(()=>t.style.display='none', 3000);
     }
     </script>
 </body>
