@@ -53,14 +53,14 @@ unsigned long warningStartTime = 0;             // <<< BU SATIRI EKLEYİN
 Preferences preferences;
 
 // Kayıtlı bir aracın tüm bilgilerini bir arada tutan struct
-struct RegisteredVehicleInfo {
+struct RegisteredVehicleInfo
+{
   String sharedKey;
   String nickname;
   String vehicleName;
 };
 
-std::map<String, RegisteredVehicleInfo> registeredDevices; 
-
+std::map<String, RegisteredVehicleInfo> registeredDevices;
 
 // Durum Makinesi için Enum
 enum GateState
@@ -73,11 +73,12 @@ enum GateState
 };
 
 // Yeni Çalışma Modları
-enum GateOperationMode {
-  MODE_NORMAL,        // Normal otomatik çalışma (araç sinyaline göre aç/kapat)
-  MODE_FORCE_OPEN,    // Sürekli Açık Tut (komutları yoksay)
-  MODE_FORCE_CLOSE,   // Sürekli Kapalı Tut (komutları yoksay)
-  MODE_DISABLED       // Motoru Durdur / Servis Modu (komutları yoksay)
+enum GateOperationMode
+{
+  MODE_NORMAL,      // Normal otomatik çalışma (araç sinyaline göre aç/kapat)
+  MODE_FORCE_OPEN,  // Sürekli Açık Tut (komutları yoksay)
+  MODE_FORCE_CLOSE, // Sürekli Kapalı Tut (komutları yoksay)
+  MODE_DISABLED     // Motoru Durdur / Servis Modu (komutları yoksay)
 };
 
 // LED Görevi İçin Yapı (Queue Item)
@@ -96,9 +97,8 @@ struct DeviceSettings
   int openLimit;              // Açık kalma süresi sınırı (saniye) - güvenlik için
   int logLevel;               // 0 = INFO, 1 = VERBOSE
   bool authorizationRequired; // Yetkilendirme gerekliliği
-  GateOperationMode operationMode; 
+  GateOperationMode operationMode;
   String pinCode;
-
 };
 
 // Global Değişkenler
@@ -118,11 +118,9 @@ bool shouldBeep = false;                        // Motor hareket halindeyken bip
 
 // BLE Karakteristikleri için global değişkenler
 BLECharacteristic *pSettingsChar;
-BLECharacteristic *pStatusChar; 
+BLECharacteristic *pStatusChar;
 BLECharacteristic *pPinAuthChar;
-bool isAuthenticated = false; 
-
-
+bool isAuthenticated = false;
 
 // Beacon yayını için zamanlama değişkenleri
 unsigned long lastBeaconTime = 0;
@@ -142,7 +140,6 @@ unsigned long scanModeEndTime = 0;
 const unsigned long SCAN_DURATION_MS = 300000;    // 30 saniye tarama süresi
 const unsigned long BROADCAST_INTERVAL_MS = 1000; // Her 1 saniyede bir broadcast
 unsigned long lastScanBroadcastTime = 0;
-
 
 // Eşleşme protokolü için yeni durumlar ve değişkenler
 enum AuthMode
@@ -176,20 +173,31 @@ void printSettingsToSerial()
 
   // operationMode enum'unu okunabilir bir metne çevir
   String opModeStr;
-  switch (settings.operationMode) {
-    case MODE_NORMAL:      opModeStr = "Normal (Automatic)"; break;
-    case MODE_FORCE_OPEN:  opModeStr = "Force Open"; break;
-    case MODE_FORCE_CLOSE: opModeStr = "Force Close"; break;
-    case MODE_DISABLED:    opModeStr = "Disabled"; break;
-    default:               opModeStr = "Unknown"; break;
+  switch (settings.operationMode)
+  {
+  case MODE_NORMAL:
+    opModeStr = "Normal (Automatic)";
+    break;
+  case MODE_FORCE_OPEN:
+    opModeStr = "Force Open";
+    break;
+  case MODE_FORCE_CLOSE:
+    opModeStr = "Force Close";
+    break;
+  case MODE_DISABLED:
+    opModeStr = "Disabled";
+    break;
+  default:
+    opModeStr = "Unknown";
+    break;
   }
   logMessage("Operation Mode: " + opModeStr, 0, settings.logLevel);
-  
+
   // Güvenlik ayarları
   logMessage("Authorization Required: " + String(settings.authorizationRequired ? "Yes" : "No"), 0, settings.logLevel);
   // Güvenlik için PIN'in kendisi yerine sadece var olup olmadığını yazdır
   logMessage("PIN Set: " + String(settings.pinCode.isEmpty() ? "No" : "Yes"), 0, settings.logLevel);
-  
+
   // Zamanlama ayarları
   logMessage("Auto-close Timeout (Signal Loss): " + String(settings.closeTimeout) + "s", 0, settings.logLevel);
   logMessage("Pre-close Warning: " + String(settings.preCloseWarning) + "s", 0, settings.logLevel);
@@ -197,7 +205,7 @@ void printSettingsToSerial()
 
   // Diğer ayarlar
   logMessage("Log Level: " + String(settings.logLevel == 0 ? "INFO" : "VERBOSE"), 0, settings.logLevel);
-  
+
   logMessage("-----------------------", 0, settings.logLevel);
 }
 
@@ -222,10 +230,8 @@ void loadSettings()
   settings.logLevel = preferences.getInt("logLevel", DEFAULT_LOG_LEVEL_INFO);
   settings.authorizationRequired = preferences.getBool("authReq", true);
 
-    settings.operationMode = (GateOperationMode)preferences.getInt("opMode", MODE_NORMAL);
-    settings.pinCode = preferences.getString("pinCode", "");
-
-
+  settings.operationMode = (GateOperationMode)preferences.getInt("opMode", MODE_NORMAL);
+  settings.pinCode = preferences.getString("pinCode", "");
 
   preferences.end();
   logMessage("Settings loaded from NVRAM.", 0, settings.logLevel);
@@ -243,62 +249,64 @@ void saveSettings()
   preferences.putInt("logLevel", settings.logLevel);
   preferences.putBool("authReq", settings.authorizationRequired);
 
-    preferences.putInt("opMode", settings.operationMode); 
-      preferences.putString("pinCode", settings.pinCode);
-
-
+  preferences.putInt("opMode", settings.operationMode);
+  preferences.putString("pinCode", settings.pinCode);
 
   preferences.end();
   isSettingsChanged = false;
   logMessage("Settings saved to NVRAM.", 0, settings.logLevel);
 }
 
-void saveRegisteredDevices() {
+void saveRegisteredDevices()
+{
   preferences.begin("auth_list", false);
-  
+
   JsonDocument doc;
   JsonArray array = doc.to<JsonArray>();
-  
-  for (auto const& pair : registeredDevices) {
-    JsonObject device = array.add<JsonObject>();
-    device["mac"] = pair.first; // MAC adresi
-    device["key"] = pair.second.sharedKey; // Anahtar
-    device["nickname"] = pair.second.nickname; // Takma isim
-    device["vehicleName"] = pair.second.vehicleName; // <<< yeni
 
+  for (auto const &pair : registeredDevices)
+  {
+    JsonObject device = array.add<JsonObject>();
+    device["mac"] = pair.first;                      // MAC adresi
+    device["key"] = pair.second.sharedKey;           // Anahtar
+    device["nickname"] = pair.second.nickname;       // Takma isim
+    device["vehicleName"] = pair.second.vehicleName; // <<< yeni
   }
-  
+
   String jsonOutput;
   serializeJson(doc, jsonOutput);
   preferences.putString("devices_json", jsonOutput);
-  
+
   preferences.end();
   logMessage("Saved " + String(registeredDevices.size()) + " registered devices.", 0, settings.logLevel);
 }
 
-void loadRegisteredDevices() {
+void loadRegisteredDevices()
+{
   registeredDevices.clear();
   preferences.begin("auth_list", true);
 
   String jsonInput = preferences.getString("devices_json", "[]"); // Varsayılan olarak boş dizi
-  
+
   JsonDocument doc;
   DeserializationError error = deserializeJson(doc, jsonInput);
-  
-  if (!error) {
+
+  if (!error)
+  {
     JsonArray array = doc.as<JsonArray>();
-    for (JsonObject device : array) {
+    for (JsonObject device : array)
+    {
       String mac = device["mac"];
-      
+
       RegisteredVehicleInfo info;
       info.sharedKey = device["key"].as<String>();
       info.nickname = device["nickname"].as<String>();
       info.vehicleName = device["vehicleName"].as<String>(); // <<< yeni
-      
+
       registeredDevices[mac] = info;
     }
   }
-  
+
   preferences.end();
   logMessage("Loaded " + String(registeredDevices.size()) + " registered devices.", 0, settings.logLevel);
 }
@@ -308,109 +316,131 @@ bool isMacRegistered(const String &mac)
   return registeredDevices.count(mac) > 0;
 }
 
-void printRegisteredDevices() {
+void printRegisteredDevices()
+{
   logMessage("--- Registered Devices (MAC -> Vehicle name | Nickname | Key) ---", 0, settings.logLevel);
-  if (registeredDevices.empty()) {
+  if (registeredDevices.empty())
+  {
     logMessage("  No registered devices found.", 0, settings.logLevel);
-  } else {
-    for (auto const& pair : registeredDevices) {
+  }
+  else
+  {
+    for (auto const &pair : registeredDevices)
+    {
       String mac = pair.first;
       RegisteredVehicleInfo info = pair.second;
       logMessage("  - " + mac + " -> " + info.vehicleName + " | " + info.nickname + " | " + info.sharedKey.substring(0, 8) + "...", 0, settings.logLevel);
-
     }
   }
   logMessage("-------------------------------------------------", 0, settings.logLevel);
 }
 
-class MyCharacteristicCallbacks : public BLECharacteristicCallbacks {
-    void onRead(BLECharacteristic *pCharacteristic) {
-        JsonDocument jsonDoc;
-        jsonDoc["deviceName"] = settings.deviceName;
-        jsonDoc["closeTimeout"] = settings.closeTimeout;
-        jsonDoc["preCloseWarning"] = settings.preCloseWarning;
-        jsonDoc["openLimit"] = settings.openLimit;
-        jsonDoc["opMode"] = settings.operationMode;
-        jsonDoc["authReq"] = settings.authorizationRequired;
-        
-        String jsonString;
-        serializeJson(jsonDoc, jsonString);
-        pCharacteristic->setValue(jsonString.c_str());
-    }
+class MyCharacteristicCallbacks : public BLECharacteristicCallbacks
+{
+  void onRead(BLECharacteristic *pCharacteristic)
+  {
+    JsonDocument jsonDoc;
+    jsonDoc["deviceName"] = settings.deviceName;
+    jsonDoc["closeTimeout"] = settings.closeTimeout;
+    jsonDoc["preCloseWarning"] = settings.preCloseWarning;
+    jsonDoc["openLimit"] = settings.openLimit;
+    jsonDoc["opMode"] = settings.operationMode;
+    jsonDoc["authReq"] = settings.authorizationRequired;
 
-    void onWrite(BLECharacteristic *pCharacteristic) {
-        std::string value = pCharacteristic->getValue();
-        if (!value.empty()) {
-            JsonDocument jsonDoc;
-            deserializeJson(jsonDoc, value);
-
-           // Gelen JSON'dan ayarları oku ve settings nesnesini güncelle
-if (jsonDoc["deviceName"].is<const char*>()) {
-    strlcpy(settings.deviceName, jsonDoc["deviceName"], sizeof(settings.deviceName));
-}
-if (jsonDoc["closeTimeout"].is<int>()) {
-    settings.closeTimeout = jsonDoc["closeTimeout"];
-}
-if (jsonDoc["preCloseWarning"].is<int>()) {
-    settings.preCloseWarning = jsonDoc["preCloseWarning"];
-}
-if (jsonDoc["opMode"].is<int>()) {
-    settings.operationMode = (GateOperationMode)jsonDoc["opMode"].as<int>();
-}
-if (jsonDoc["authReq"].is<bool>()) {
-    settings.authorizationRequired = jsonDoc["authReq"];
-}
-            
-            isSettingsChanged = true; // Değişiklik olduğunu işaretle
-            lastSettingsChangeTime = millis();
-        }
-    }
-};
-
-
-
-class DeviceManagementCallbacks : public BLECharacteristicCallbacks {
-  void onRead(BLECharacteristic *pCharacteristic) {
-      // Bu karakteristiğe okuma isteği geldiğinde, kayıtlı cihaz listesini JSON olarak gönder.
-      JsonDocument doc;
-      JsonArray array = doc.to<JsonArray>();
-      for (auto const& pair : registeredDevices) {
-          JsonObject device = array.add<JsonObject>();
-          device["mac"] = pair.first;
-          device["nickname"] = pair.second.nickname;
-      }
-      String jsonString;
-      serializeJson(doc, jsonString);
-      pCharacteristic->setValue(jsonString.c_str());
-      logMessage("Sent device list over BLE.", 1, settings.logLevel);
+    String jsonString;
+    serializeJson(jsonDoc, jsonString);
+    pCharacteristic->setValue(jsonString.c_str());
   }
 
-  void onWrite(BLECharacteristic *pCharacteristic) {
-      std::string value = pCharacteristic->getValue();
-      if (value.length() > 0) {
-          JsonDocument doc;
-          deserializeJson(doc, value);
-          
-          const char* action = doc["action"];
-          if (!action) return;
+  void onWrite(BLECharacteristic *pCharacteristic)
+  {
+    std::string value = pCharacteristic->getValue();
+    if (!value.empty())
+    {
+      JsonDocument jsonDoc;
+      deserializeJson(jsonDoc, value);
 
-          if (strcmp(action, "update_nickname") == 0) {
-              String mac = doc["mac"];
-              String nickname = doc["nickname"];
-              if (registeredDevices.count(mac)) {
-                  registeredDevices[mac].nickname = nickname;
-                  saveRegisteredDevices();
-                  logMessage("Updated nickname for " + mac, 0, settings.logLevel);
-              }
-          } else if (strcmp(action, "delete_device") == 0) {
-              String mac = doc["mac"];
-              if (registeredDevices.count(mac)) {
-                  registeredDevices.erase(mac);
-                  saveRegisteredDevices();
-                  logMessage("Deleted device " + mac, 0, settings.logLevel);
-              }
-          }
+      // Gelen JSON'dan ayarları oku ve settings nesnesini güncelle
+      if (jsonDoc["deviceName"].is<const char *>())
+      {
+        strlcpy(settings.deviceName, jsonDoc["deviceName"], sizeof(settings.deviceName));
       }
+      if (jsonDoc["closeTimeout"].is<int>())
+      {
+        settings.closeTimeout = jsonDoc["closeTimeout"];
+      }
+      if (jsonDoc["preCloseWarning"].is<int>())
+      {
+        settings.preCloseWarning = jsonDoc["preCloseWarning"];
+      }
+      if (jsonDoc["opMode"].is<int>())
+      {
+        settings.operationMode = (GateOperationMode)jsonDoc["opMode"].as<int>();
+      }
+      if (jsonDoc["authReq"].is<bool>())
+      {
+        settings.authorizationRequired = jsonDoc["authReq"];
+      }
+
+      isSettingsChanged = true; // Değişiklik olduğunu işaretle
+      lastSettingsChangeTime = millis();
+    }
+  }
+};
+
+class DeviceManagementCallbacks : public BLECharacteristicCallbacks
+{
+  void onRead(BLECharacteristic *pCharacteristic)
+  {
+    // Bu karakteristiğe okuma isteği geldiğinde, kayıtlı cihaz listesini JSON olarak gönder.
+    JsonDocument doc;
+    JsonArray array = doc.to<JsonArray>();
+    for (auto const &pair : registeredDevices)
+    {
+      JsonObject device = array.add<JsonObject>();
+      device["mac"] = pair.first;
+      device["nickname"] = pair.second.nickname;
+    }
+    String jsonString;
+    serializeJson(doc, jsonString);
+    pCharacteristic->setValue(jsonString.c_str());
+    logMessage("Sent device list over BLE.", 1, settings.logLevel);
+  }
+
+  void onWrite(BLECharacteristic *pCharacteristic)
+  {
+    std::string value = pCharacteristic->getValue();
+    if (value.length() > 0)
+    {
+      JsonDocument doc;
+      deserializeJson(doc, value);
+
+      const char *action = doc["action"];
+      if (!action)
+        return;
+
+      if (strcmp(action, "update_nickname") == 0)
+      {
+        String mac = doc["mac"];
+        String nickname = doc["nickname"];
+        if (registeredDevices.count(mac))
+        {
+          registeredDevices[mac].nickname = nickname;
+          saveRegisteredDevices();
+          logMessage("Updated nickname for " + mac, 0, settings.logLevel);
+        }
+      }
+      else if (strcmp(action, "delete_device") == 0)
+      {
+        String mac = doc["mac"];
+        if (registeredDevices.count(mac))
+        {
+          registeredDevices.erase(mac);
+          saveRegisteredDevices();
+          logMessage("Deleted device " + mac, 0, settings.logLevel);
+        }
+      }
+    }
   }
 };
 
@@ -523,84 +553,96 @@ void ledTask(void *pvParameters)
 
 // gate.cpp -> Mevcut stateMachineTask fonksiyonunu silip bunu yapıştırın
 
-void stateMachineTask(void *pvParameters) {
-  while (true) {
+void stateMachineTask(void *pvParameters)
+{
+  while (true)
+  {
     unsigned long currentTime = millis();
 
     // Ana kontrol: Cihazın genel çalışma moduna göre ne yapacağına karar ver.
-    switch (settings.operationMode) {
-      
-      case MODE_FORCE_OPEN:
-        // ZORUNLU AÇIK MODU: Kapı kapalıysa aç, açıksa açık bırak.
-        if (currentState != GATE_IDLE_OPEN && currentState != GATE_OPENING) {
-          logMessage("FORCE_OPEN mode active. Opening gate.", 0, settings.logLevel);
-          currentState = GATE_OPENING;
-          triggerMotor(true);
-          updateLights();
+    switch (settings.operationMode)
+    {
+
+    case MODE_FORCE_OPEN:
+      // ZORUNLU AÇIK MODU: Kapı kapalıysa aç, açıksa açık bırak.
+      if (currentState != GATE_IDLE_OPEN && currentState != GATE_OPENING)
+      {
+        logMessage("FORCE_OPEN mode active. Opening gate.", 0, settings.logLevel);
+        currentState = GATE_OPENING;
+        triggerMotor(true);
+        updateLights();
+      }
+      break;
+
+    case MODE_FORCE_CLOSE:
+      // ZORUNLU KAPALI MODU: Kapı açıksa kapat, kapalıysa kapalı bırak.
+      if (currentState != GATE_CLOSED && currentState != GATE_CLOSING)
+      {
+        logMessage("FORCE_CLOSE mode active. Closing gate.", 0, settings.logLevel);
+        currentState = GATE_CLOSING;
+        triggerMotor(false);
+        updateLights();
+      }
+      break;
+
+    case MODE_DISABLED:
+      // SERVİS DIŞI MODU: Motoru hemen durdur.
+      if (currentState == GATE_OPENING || currentState == GATE_CLOSING)
+      {
+        logMessage("DISABLED mode active. Stopping motor.", 0, settings.logLevel);
+        stopMotor(true);
+        currentState = GATE_IDLE_OPEN; // Durduğu pozisyonu "açık" kabul edelim
+        updateLights();
+      }
+      break;
+
+    case MODE_NORMAL:
+      // NORMAL OTOMATİK MOD: Sadece bu moddayken sinyal kesintisini ve limitleri kontrol et.
+      switch (currentState)
+      {
+      case GATE_IDLE_OPEN:
+        // Sinyal kaybı veya openLimit zaman aşımlarını burada kontrol et
+        if ((lastAuthenticatedCommandTime > 0 && (currentTime - lastAuthenticatedCommandTime > (settings.closeTimeout * 1000UL))) ||
+            (currentTime - stateChangeTime >= (settings.openLimit * 1000UL)))
+        {
+
+          if (currentTime - stateChangeTime >= (settings.openLimit * 1000UL))
+            logMessage("Open limit reached. Starting pre-close warning.", 0, settings.logLevel);
+          else
+            logMessage("Loss of signal detected. Starting pre-close warning.", 0, settings.logLevel);
+
+          currentState = GATE_WARNING;
+          warningStartTime = currentTime;
         }
         break;
 
-      case MODE_FORCE_CLOSE:
-        // ZORUNLU KAPALI MODU: Kapı açıksa kapat, kapalıysa kapalı bırak.
-        if (currentState != GATE_CLOSED && currentState != GATE_CLOSING) {
-          logMessage("FORCE_CLOSE mode active. Closing gate.", 0, settings.logLevel);
+      case GATE_WARNING:
+        // Kapanma öncesi uyarı verme mantığı
+        digitalWrite(RED_PIN, (currentTime % 1000 < 500) ? LIGHT_ON : LIGHT_OFF);
+        digitalWrite(BUZZER_PIN, (currentTime % 1000 < 100) ? BUZZER_ON : BUZZER_OFF);
+        if (currentTime - warningStartTime > (settings.preCloseWarning * 1000UL))
+        {
+          logMessage("Pre-close warning finished. Closing gate.", 0, settings.logLevel);
           currentState = GATE_CLOSING;
           triggerMotor(false);
           updateLights();
-        }
-        break;
-      
-      case MODE_DISABLED:
-        // SERVİS DIŞI MODU: Motoru hemen durdur.
-        if (currentState == GATE_OPENING || currentState == GATE_CLOSING) {
-            logMessage("DISABLED mode active. Stopping motor.", 0, settings.logLevel);
-            stopMotor(true);
-            currentState = GATE_IDLE_OPEN; // Durduğu pozisyonu "açık" kabul edelim
-            updateLights();
+          lastAuthenticatedCommandTime = 0;
         }
         break;
 
-      case MODE_NORMAL:
-        // NORMAL OTOMATİK MOD: Sadece bu moddayken sinyal kesintisini ve limitleri kontrol et.
-        switch (currentState) {
-          case GATE_IDLE_OPEN:
-            // Sinyal kaybı veya openLimit zaman aşımlarını burada kontrol et
-            if ((lastAuthenticatedCommandTime > 0 && (currentTime - lastAuthenticatedCommandTime > (settings.closeTimeout * 1000UL))) || 
-                (currentTime - stateChangeTime >= (settings.openLimit * 1000UL))) {
-              
-              if (currentTime - stateChangeTime >= (settings.openLimit * 1000UL))
-                  logMessage("Open limit reached. Starting pre-close warning.", 0, settings.logLevel);
-              else
-                  logMessage("Loss of signal detected. Starting pre-close warning.", 0, settings.logLevel);
-
-              currentState = GATE_WARNING;
-              warningStartTime = currentTime;
-            }
-            break;
-
-          case GATE_WARNING:
-            // Kapanma öncesi uyarı verme mantığı
-            digitalWrite(RED_PIN, (currentTime % 1000 < 500) ? LIGHT_ON : LIGHT_OFF);
-            digitalWrite(BUZZER_PIN, (currentTime % 1000 < 100) ? BUZZER_ON : BUZZER_OFF);
-            if (currentTime - warningStartTime > (settings.preCloseWarning * 1000UL)) {
-              logMessage("Pre-close warning finished. Closing gate.", 0, settings.logLevel);
-              currentState = GATE_CLOSING;
-              triggerMotor(false);
-              updateLights();
-              lastAuthenticatedCommandTime = 0;
-            }
-            break;
-            
-          // Diğer durumlar (OPENING, CLOSING, CLOSED) kendi içinde yönetiliyor veya bir şey yapmıyor.
-        }
-        break;
+        // Diğer durumlar (OPENING, CLOSING, CLOSED) kendi içinde yönetiliyor veya bir şey yapmıyor.
+      }
+      break;
     }
 
     // Motor hareket halindeyken sürekli bip sesi (bu genel kontrol kalabilir)
     shouldBeep = (currentState == GATE_OPENING || currentState == GATE_CLOSING);
-    if (shouldBeep) {
+    if (shouldBeep)
+    {
       digitalWrite(BUZZER_PIN, BUZZER_ON);
-    } else if (currentState != GATE_WARNING) {
+    }
+    else if (currentState != GATE_WARNING)
+    {
       digitalWrite(BUZZER_PIN, BUZZER_OFF);
     }
 
@@ -635,24 +677,26 @@ void sendScanRequestBroadcast()
   }
 }
 
-
-
 // Gelen komutları işleyen merkezi fonksiyon
 // Gelen komutları işleyen merkezi fonksiyon
-void handleCommand(const char* command) {
+void handleCommand(const char *command)
+{
   // --- OPEN Komutu Mantığı ---
-  if (strcmp(command, "OPEN") == 0) {
+  if (strcmp(command, "OPEN") == 0)
+  {
     // Durum 1: Kapı kapalı veya kapanmak üzere uyarı veriyorsa, kapıyı aç.
-    if (currentState == GATE_CLOSED || currentState == GATE_WARNING) {
+    if (currentState == GATE_CLOSED || currentState == GATE_WARNING)
+    {
       currentState = GATE_OPENING;
       triggerMotor(true);
       updateLights();
       logMessage("Command: OPEN. Gate is opening...", 0, settings.logLevel);
-    } 
+    }
     // Durum 2: Kapı tam kapanırken araç geri geldiyse, durdur ve tekrar aç.
-    else if (currentState == GATE_CLOSING) {
+    else if (currentState == GATE_CLOSING)
+    {
       logMessage("Command: OPEN received while closing. Re-opening gate.", 0, settings.logLevel);
-      stopMotor(true); // Motoru durdur
+      stopMotor(true);                              // Motoru durdur
       vTaskDelay(pdMS_TO_TICKS(MOTOR_COOLDOWN_MS)); // Kısa bir bekleme
       currentState = GATE_OPENING;
       triggerMotor(true); // Tekrar aç
@@ -660,16 +704,19 @@ void handleCommand(const char* command) {
     }
     // Durum 3: Kapı zaten açık veya açılıyorsa, hiçbir şey yapma.
     // Sadece log basarak sinyalin alındığını ve kapının açık tutulduğunu belirt.
-    else if (currentState == GATE_IDLE_OPEN || currentState == GATE_OPENING) {
-       logMessage("Command: OPEN received. Keeping gate open.", 1, settings.logLevel); // Seviye 1 log
+    else if (currentState == GATE_IDLE_OPEN || currentState == GATE_OPENING)
+    {
+      logMessage("Command: OPEN received. Keeping gate open.", 1, settings.logLevel); // Seviye 1 log
     }
-  } 
+  }
   // --- WARN Komutu Mantığı ---
-  else if (strcmp(command, "WARN") == 0) {
+  else if (strcmp(command, "WARN") == 0)
+  {
     // WARN komutunun ana görevi "ben buradayım" sinyali vermektir.
     // Zamanlayıcı zaten OnDataRecv'de sıfırlandığı için burada ek bir motor işlemi yapmayız.
     // Sadece kapı açıkken bu sinyalin bir anlamı olur.
-    if (currentState == GATE_IDLE_OPEN) {
+    if (currentState == GATE_IDLE_OPEN)
+    {
       logMessage("Command: WARN received. Auto-close postponed.", 1, settings.logLevel);
     }
   }
@@ -677,10 +724,11 @@ void handleCommand(const char* command) {
 }
 
 // ESP-NOW veri alındığında çağrılır
-void OnDataRecv(const uint8_t *mac_addr, const uint8_t *incomingData, int len) {
+void OnDataRecv(const uint8_t *mac_addr, const uint8_t *incomingData, int len)
+{
 
-
-  if (settings.operationMode != MODE_NORMAL) {
+  if (settings.operationMode != MODE_NORMAL)
+  {
     logMessage("Ignoring incoming packet due to override mode.", 1, settings.logLevel);
     LedPattern p_ack = {50, 3}; // 50ms, 1 kere
     xQueueSend(ledQueue, &p_ack, 0);
@@ -696,25 +744,29 @@ void OnDataRecv(const uint8_t *mac_addr, const uint8_t *incomingData, int len) {
 
   JsonDocument doc;
   DeserializationError error = deserializeJson(doc, incomingData, len);
-  if (error) {
+  if (error)
+  {
     logMessage("JSON parsing failed.", 1, settings.logLevel);
     return;
   }
-  
-  const char* msgType = doc["msgType"];
-  if (!msgType) {
+
+  const char *msgType = doc["msgType"];
+  if (!msgType)
+  {
     logMessage("msgType field missing.", 1, settings.logLevel);
     return;
   }
-  
+
   String vehicleMac = macToString(mac_addr);
   logMessage("Received '" + String(msgType) + "' from " + vehicleMac, 1, settings.logLevel);
 
   // === EŞLEŞME MESAJLARI ===
 
   // 1. Adım: Araçtan eşleşme onayı geldi
-  if (strcmp(msgType, "AUTH_ACK") == 0) {
-    if (currentAuthMode == AUTH_SCANNING) {
+  if (strcmp(msgType, "AUTH_ACK") == 0)
+  {
+    if (currentAuthMode == AUTH_SCANNING)
+    {
       logMessage("AUTH_ACK received. Adding Vehicle as peer...", 0, settings.logLevel);
 
       // Cevap verilecek Aracı geçici olarak peer listesine ekle
@@ -722,8 +774,9 @@ void OnDataRecv(const uint8_t *mac_addr, const uint8_t *incomingData, int len) {
       memcpy(peerInfo.peer_addr, mac_addr, 6);
       peerInfo.channel = FIXED_WIFI_CHANNEL;
       peerInfo.encrypt = false;
-      
-      if (esp_now_add_peer(&peerInfo) != ESP_OK) {
+
+      if (esp_now_add_peer(&peerInfo) != ESP_OK)
+      {
         logMessage("Fatal: Failed to add Vehicle as peer.", 0, settings.logLevel);
         currentAuthMode = AUTH_IDLE;
         return;
@@ -731,98 +784,117 @@ void OnDataRecv(const uint8_t *mac_addr, const uint8_t *incomingData, int len) {
 
       // Yeni, benzersiz ortak anahtar oluştur ve kaydet
       uint8_t newSharedKey[16];
-      for (int i = 0; i < 16; i++) { newSharedKey[i] = esp_random() % 256; }
-      
-      char newSharedKeyHex[33];
-      for(int i = 0; i < 16; i++) { sprintf(newSharedKeyHex + i * 2, "%02x", newSharedKey[i]); }
+      for (int i = 0; i < 16; i++)
+      {
+        newSharedKey[i] = esp_random() % 256;
+      }
 
-      const char* incomingVehicleName = doc["deviceName"];
+      char newSharedKeyHex[33];
+      for (int i = 0; i < 16; i++)
+      {
+        sprintf(newSharedKeyHex + i * 2, "%02x", newSharedKey[i]);
+      }
+
+      const char *incomingVehicleName = doc["deviceName"];
       String vehicleNameStr = incomingVehicleName ? String(incomingVehicleName) : "Unknown";
-      
+
       RegisteredVehicleInfo newVehicle;
       newVehicle.sharedKey = String(newSharedKeyHex);
-      newVehicle.nickname = vehicleNameStr; // ilk başta nickname'i de araç ismi yap
+      newVehicle.nickname = vehicleNameStr;    // ilk başta nickname'i de araç ismi yap
       newVehicle.vehicleName = vehicleNameStr; // orijinal araç ismi sakla
 
-      registeredDevices[vehicleMac] = newVehicle; 
-
+      registeredDevices[vehicleMac] = newVehicle;
 
       saveRegisteredDevices();
-      
+
       // Anahtarı şifreleyip gönderme moduna geç
-      String keyToSend = String((char*)newSharedKey, 16);
+      String keyToSend = String((char *)newSharedKey, 16);
       pendingEncryptedKey = encryptDecrypt(keyToSend, PMK, sizeof(PMK));
       pendingVehicleMac = vehicleMac;
-      
+
       currentAuthMode = AUTH_SENDING_KEY;
       keySendStartTime = millis();
       lastKeySendTime = 0;
       logMessage("Starting repeated KEY_DELIVERY to " + vehicleMac, 0, settings.logLevel);
     }
-  } 
+  }
   // 2. Adım: Araçtan anahtarı aldığına dair son teyit geldi
-  else if (strcmp(msgType, "KEY_ACK") == 0) {
-    if (currentAuthMode == AUTH_SENDING_KEY && vehicleMac.equals(pendingVehicleMac)) {
-        logMessage("KEY_ACK received. Pairing is now fully complete with " + vehicleMac, 0, settings.logLevel);
-        
-        esp_now_del_peer(mac_addr); // Geçici peer kaydını sil
-        
-        currentAuthMode = AUTH_IDLE;
-        pendingVehicleMac = "";
-        pendingEncryptedKey = "";
-        
-        LedPattern p = {10000, 1}; xQueueSend(ledQueue, &p, 0); // Başarı sinyali
+  else if (strcmp(msgType, "KEY_ACK") == 0)
+  {
+    if (currentAuthMode == AUTH_SENDING_KEY && vehicleMac.equals(pendingVehicleMac))
+    {
+      logMessage("KEY_ACK received. Pairing is now fully complete with " + vehicleMac, 0, settings.logLevel);
+
+      esp_now_del_peer(mac_addr); // Geçici peer kaydını sil
+
+      currentAuthMode = AUTH_IDLE;
+      pendingVehicleMac = "";
+      pendingEncryptedKey = "";
+
+      LedPattern p = {10000, 1};
+      xQueueSend(ledQueue, &p, 0); // Başarı sinyali
     }
-  } 
+  }
 
   // === NORMAL OPERASYON MESAJLARI ===
 
   // Güvenli komut geldi
-  else if (strcmp(msgType, "COMMAND") == 0) {
-    const char* command = doc["command"];
-    if (!command) {
-        logMessage("Command field missing in COMMAND.", 0, settings.logLevel);
-        return;
+  else if (strcmp(msgType, "COMMAND") == 0)
+  {
+    const char *command = doc["command"];
+    if (!command)
+    {
+      logMessage("Command field missing in COMMAND.", 0, settings.logLevel);
+      return;
     }
 
     // 1. Güvenlik Gerekli Değilse (Herkese Açık Mod)
-    if (!settings.authorizationRequired) {
+    if (!settings.authorizationRequired)
+    {
       logMessage("Authorization not required. Processing command directly.", 1, settings.logLevel);
       lastAuthenticatedCommandTime = millis(); // Sinyal var olarak kabul et
       handleCommand(command);
-    } 
+    }
     // 2. Güvenlik Gerekliyse
-    else {
-      if (!isMacRegistered(vehicleMac)) {
+    else
+    {
+      if (!isMacRegistered(vehicleMac))
+      {
         logMessage("CMD from unregistered device: " + vehicleMac, 0, settings.logLevel);
         return;
       }
 
-      const char* nonce = doc["nonce"];
-      const char* receivedHmac = doc["hmac"];
-      if (!nonce || !receivedHmac) {
+      const char *nonce = doc["nonce"];
+      const char *receivedHmac = doc["hmac"];
+      if (!nonce || !receivedHmac)
+      {
         logMessage("Secure command missing nonce or hmac.", 0, settings.logLevel);
         return;
       }
-      
+
       String sharedKeyHex = registeredDevices[vehicleMac].sharedKey;
       uint8_t sharedKey[16];
-      for(int i=0; i<16; i++){ sscanf(sharedKeyHex.c_str() + i*2, "%2hhx", &sharedKey[i]); }
+      for (int i = 0; i < 16; i++)
+      {
+        sscanf(sharedKeyHex.c_str() + i * 2, "%2hhx", &sharedKey[i]);
+      }
 
       String dataToSign = vehicleMac + String(command) + String(nonce);
       String expectedHmac = calculateHmac(sharedKey, 16, dataToSign.c_str());
 
-      if (expectedHmac.equals(String(receivedHmac))) {
-          logMessage("HMAC SUCCESS! Secure command verified: " + String(command), 0, settings.logLevel);
-          lastAuthenticatedCommandTime = millis(); // Otomatik kapanma zamanlayıcısını sıfırla
-          
-          LedPattern p_cmd = {100, 2}; // 100ms, 2 kere
-          xQueueSend(ledQueue, &p_cmd, 0);
+      if (expectedHmac.equals(String(receivedHmac)))
+      {
+        logMessage("HMAC SUCCESS! Secure command verified: " + String(command), 0, settings.logLevel);
+        lastAuthenticatedCommandTime = millis(); // Otomatik kapanma zamanlayıcısını sıfırla
 
-          handleCommand(command);                  // Komutu işle
+        LedPattern p_cmd = {100, 2}; // 100ms, 2 kere
+        xQueueSend(ledQueue, &p_cmd, 0);
 
-      } else {
-          logMessage("HMAC FAILED! Command rejected from " + vehicleMac, 0, settings.logLevel);
+        handleCommand(command); // Komutu işle
+      }
+      else
+      {
+        logMessage("HMAC FAILED! Command rejected from " + vehicleMac, 0, settings.logLevel);
       }
     }
   }
@@ -837,91 +909,169 @@ void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status)
   }
 }
 
-
-
 // gate.cpp -> setup()'dan önce bir yere ekleyin
 
-class MyServerCallbacks: public BLEServerCallbacks {
-    void onConnect(BLEServer* pServer) {
-      logMessage("BLE Client Connected.", 0, settings.logLevel);
-    }
-    void onDisconnect(BLEServer* pServer) {
-      logMessage("BLE Client Disconnected.", 0, settings.logLevel);
-      BLEDevice::startAdvertising();
-    }
+class MyServerCallbacks : public BLEServerCallbacks
+{
+  void onConnect(BLEServer *pServer)
+  {
+     isAuthenticated = false;
+    logMessage("BLE Client Connected.", 0, settings.logLevel);
+  }
+  void onDisconnect(BLEServer *pServer)
+  {
+    logMessage("BLE Client Disconnected.", 0, settings.logLevel);
+    BLEDevice::startAdvertising();
+  }
 };
 
-class SettingsCharacteristicCallbacks: public BLECharacteristicCallbacks {
-    void onRead(BLECharacteristic *pCharacteristic) {
-        JsonDocument jsonDoc;
-        jsonDoc["deviceName"] = settings.deviceName;
-        jsonDoc["closeTimeout"] = settings.closeTimeout;
-        jsonDoc["preCloseWarning"] = settings.preCloseWarning;
-        jsonDoc["openLimit"] = settings.openLimit;
-        jsonDoc["opMode"] = settings.operationMode;
-        jsonDoc["authReq"] = settings.authorizationRequired;
-        
-        String jsonString;
-        serializeJson(jsonDoc, jsonString);
-        pCharacteristic->setValue(jsonString.c_str());
-        logMessage("Sent settings over BLE.", 1, settings.logLevel);
+class SettingsCharacteristicCallbacks : public BLECharacteristicCallbacks
+{
+  void onRead(BLECharacteristic *pCharacteristic)
+  {
+
+    if (!isAuthenticated && !settings.pinCode.isEmpty())
+    {
+      pCharacteristic->setValue("{\"error\":\"Authentication required\"}");
+      return;
     }
 
-    void onWrite(BLECharacteristic *pCharacteristic) {
-        std::string value = pCharacteristic->getValue();
-        if (!value.empty()) {
-            JsonDocument jsonDoc;
-            deserializeJson(jsonDoc, value);
-            logMessage("Received new settings via BLE.", 0, settings.logLevel);
+    JsonDocument jsonDoc;
+    jsonDoc["deviceName"] = settings.deviceName;
+    jsonDoc["closeTimeout"] = settings.closeTimeout;
+    jsonDoc["preCloseWarning"] = settings.preCloseWarning;
+    jsonDoc["openLimit"] = settings.openLimit;
+    jsonDoc["opMode"] = settings.operationMode;
+    jsonDoc["authReq"] = settings.authorizationRequired;
 
-           if (jsonDoc["deviceName"].is<const char*>()) {
-    strlcpy(settings.deviceName, jsonDoc["deviceName"], sizeof(settings.deviceName));
-}
-if (jsonDoc["closeTimeout"].is<int>()) {
-    settings.closeTimeout = jsonDoc["closeTimeout"];
-}
-if (jsonDoc["preCloseWarning"].is<int>()) {
-    settings.preCloseWarning = jsonDoc["preCloseWarning"];
-}
-if (jsonDoc["openLimit"].is<int>()) {
-    settings.openLimit = jsonDoc["openLimit"];
-}
-if (jsonDoc["opMode"].is<int>()) {
-    settings.operationMode = (GateOperationMode)jsonDoc["opMode"].as<int>();
-}
-if (jsonDoc["authReq"].is<bool>()) {
-    settings.authorizationRequired = jsonDoc["authReq"];
-}
+    String jsonString;
+    serializeJson(jsonDoc, jsonString);
+    pCharacteristic->setValue(jsonString.c_str());
+    logMessage("Sent settings over BLE.", 1, settings.logLevel);
+  }
 
-            isSettingsChanged = true;
-            lastSettingsChangeTime = millis();
-            printSettingsToSerial(); // Yeni ayarları logla
+  void onWrite(BLECharacteristic *pCharacteristic)
+{
+    // 1. Yetki Kontrolü
+    // Eğer PIN ayarlıysa ve kullanıcı kimliğini doğrulamadıysa, işlemi hemen reddet.
+    if (!isAuthenticated && !settings.pinCode.isEmpty())
+    {
+        logMessage("Settings write rejected: Not authenticated", 0, settings.logLevel);
+        pStatusChar->setValue("AUTH_REQUIRED");
+        pStatusChar->notify();
+        return;
+    }
+
+    // 2. Gelen Veriyi Al ve JSON Olarak Ayrıştır
+    std::string value = pCharacteristic->getValue();
+    if (value.empty()) return;
+
+    JsonDocument jsonDoc;
+    DeserializationError error = deserializeJson(jsonDoc, value);
+    if(error){
+        logMessage("JSON parse error on write: " + String(error.c_str()), 0, settings.logLevel);
+        return;
+    }
+
+    logMessage("Received new settings via BLE. Processing...", 1, settings.logLevel);
+    bool anyChangeDetected = false;
+
+    // 3. Ayarları Tek Tek Kontrol Et ve Güncelle
+
+    // Cihaz Adı
+    if (jsonDoc["deviceName"].is<const char*>()) {
+        String newDeviceName = jsonDoc["deviceName"].as<String>();
+        // Karşılaştırma yaparken char dizisini String'e çevir
+        if (String(settings.deviceName) != newDeviceName) {
+            strlcpy(settings.deviceName, newDeviceName.c_str(), sizeof(settings.deviceName));
+            logMessage("Setting updated: deviceName -> " + newDeviceName, 0, settings.logLevel);
+            anyChangeDetected = true;
         }
     }
+
+    // Otomatik Kapanma Süresi
+    if (jsonDoc["closeTimeout"].is<int>() && settings.closeTimeout != jsonDoc["closeTimeout"].as<int>()) {
+        settings.closeTimeout = jsonDoc["closeTimeout"];
+        logMessage("Setting updated: closeTimeout -> " + String(settings.closeTimeout), 0, settings.logLevel);
+        anyChangeDetected = true;
+    }
+    
+    // Kapanma Öncesi Uyarı
+    if (jsonDoc["preCloseWarning"].is<int>() && settings.preCloseWarning != jsonDoc["preCloseWarning"].as<int>()) {
+        settings.preCloseWarning = jsonDoc["preCloseWarning"];
+        logMessage("Setting updated: preCloseWarning -> " + String(settings.preCloseWarning), 0, settings.logLevel);
+        anyChangeDetected = true;
+    }
+
+    // Çalışma Modu
+    if (jsonDoc["opMode"].is<int>() && settings.operationMode != jsonDoc["opMode"].as<int>()) {
+        settings.operationMode = (GateOperationMode)jsonDoc["opMode"].as<int>();
+        logMessage("Setting updated: operationMode -> " + String(settings.operationMode), 0, settings.logLevel);
+        anyChangeDetected = true;
+    }
+    
+    // Güvenlik Modu
+    if (jsonDoc["authReq"].is<bool>() && settings.authorizationRequired != jsonDoc["authReq"].as<bool>()) {
+        settings.authorizationRequired = jsonDoc["authReq"];
+        logMessage("Setting updated: authorizationRequired -> " + String(settings.authorizationRequired), 0, settings.logLevel);
+        anyChangeDetected = true;
+    }
+
+    // PIN Kodu Değişikliği
+    // Web paneli, sadece PIN değiştirilmek istendiğinde bu alanı gönderir.
+    if (jsonDoc.containsKey("pinCode")) {
+        String newPin = jsonDoc["pinCode"].as<String>();
+        if (settings.pinCode != newPin) {
+            settings.pinCode = newPin;
+            isAuthenticated = false; // PIN değiştiği için güvenlik gereği yetkiyi düşür.
+            logMessage("Setting updated: PIN has been changed. Re-authentication required.", 0, settings.logLevel);
+            anyChangeDetected = true;
+        }
+    }
+
+    // 4. Eğer Herhangi Bir Değişiklik Varsa Kaydetmeyi Tetikle
+    if (anyChangeDetected) {
+        isSettingsChanged = true;
+        lastSettingsChangeTime = millis();
+        logMessage("Settings changed. Will be saved to NVRAM shortly.", 0, settings.logLevel);
+        // İsteğe bağlı: Web paneline ayarların güncellendiğine dair bir bildirim gönder
+        pStatusChar->setValue("SETTINGS_UPDATED");
+        pStatusChar->notify();
+    } else {
+        logMessage("Received settings are same as current. No changes made.", 1, settings.logLevel);
+    }
+}
 };
 
 // gate.cpp -> setup() fonksiyonundan önce uygun bir yere ekleyin
 
-class PinAuthCharacteristicCallbacks : public BLECharacteristicCallbacks {
-  void onWrite(BLECharacteristic *pCharacteristic) {
+class PinAuthCharacteristicCallbacks : public BLECharacteristicCallbacks
+{
+  void onWrite(BLECharacteristic *pCharacteristic)
+  {
     std::string value = pCharacteristic->getValue();
-    if (!value.empty()) {
+    if (!value.empty())
+    {
       // Eğer PIN ayarlı değilse veya gelen PIN doğruysa, kimliği doğrula
-      if (settings.pinCode.isEmpty() || value == settings.pinCode.c_str()) {
+      if (settings.pinCode.isEmpty() || value == settings.pinCode.c_str())
+      {
         isAuthenticated = true;
         logMessage("PIN auth successful!", 0, settings.logLevel);
         // İsteğe bağlı: Başarı durumunu bildirimle gönder
-        // if(pStatusChar) pStatusChar->notify("AUTH_SUCCESS");
-      } else {
+        if(pStatusChar) pStatusChar->notify("AUTH_SUCCESS");
+      }
+      else
+      {
         isAuthenticated = false;
         logMessage("PIN auth FAILED!", 0, settings.logLevel);
         // İsteğe bağlı: Hata durumunu bildirimle gönder
-        // if(pStatusChar) pStatusChar->notify("AUTH_FAILED");
+        if(pStatusChar) pStatusChar->notify("AUTH_FAILED");
       }
     }
   }
 
-  void onRead(BLECharacteristic *pCharacteristic) {
+  void onRead(BLECharacteristic *pCharacteristic)
+  {
     // PIN gerekip gerekmediği bilgisini JSON olarak gönder
     JsonDocument jsonDoc;
     jsonDoc["pinRequired"] = !settings.pinCode.isEmpty();
@@ -960,7 +1110,6 @@ void setup()
   digitalWrite(INTERNAL_LED_PIN, LED_OFF);
   delay(1000);
 
-
   // Ayarları ve kayıtlı mac id'leri yükle
   loadSettings();
   printSettingsToSerial();
@@ -969,7 +1118,6 @@ void setup()
   // settings.authorizationRequired = false;
   settings.logLevel = 1;
   // settings.operationMode = MODE_DISABLED;
-
 
   loadRegisteredDevices();
   printRegisteredDevices();
@@ -995,16 +1143,16 @@ void setup()
   logMessage("LED Task added.", 0, settings.logLevel);
 
   xTaskCreatePinnedToCore(
-    stateMachineTask,
-    "State Machine Task",
-    2048, // Stack size
-    NULL,
-    1, // Priority
-    &stateTaskHandle,
-    1 // Core
-);
+      stateMachineTask,
+      "State Machine Task",
+      2048, // Stack size
+      NULL,
+      1, // Priority
+      &stateTaskHandle,
+      1 // Core
+  );
 
-logMessage("State Machine Task added.", 0, settings.logLevel);
+  logMessage("State Machine Task added.", 0, settings.logLevel);
 
   // WiFi'yi istasyon moduna ayarla
   WiFi.mode(WIFI_STA);
@@ -1041,65 +1189,51 @@ logMessage("State Machine Task added.", 0, settings.logLevel);
   }
   logMessage("Broadcast peer added.", 0, settings.logLevel);
 
+  // --- BLE BAŞLATMA BLOĞU ---
+  logMessage("Initializing BLE...", 0, settings.logLevel);
+  BLEDevice::init(settings.deviceName);
+  BLEServer *pServer = BLEDevice::createServer();
+  pServer->setCallbacks(new MyServerCallbacks());
 
+  BLEService *pService = pServer->createService(GATE_SERVICE_UUID);
 
-// --- BLE BAŞLATMA BLOĞU ---
-    logMessage("Initializing BLE...", 0, settings.logLevel);
-    BLEDevice::init(settings.deviceName);
-    BLEServer *pServer = BLEDevice::createServer();
-    pServer->setCallbacks(new MyServerCallbacks());
+  // Ayarlar karakteristiği (bu zaten vardı)
+  pSettingsChar = pService->createCharacteristic(
+      CHAR_SETTINGS_UUID,
+      BLECharacteristic::PROPERTY_READ |
+          BLECharacteristic::PROPERTY_WRITE);
+  pSettingsChar->setCallbacks(new SettingsCharacteristicCallbacks());
 
-    BLEService *pService = pServer->createService(GATE_SERVICE_UUID);
+  // --- EKSİK OLAN VE EKLENMESİ GEREKEN BLOK ---
+  // PIN Doğrulama karakteristiğini oluştur ve servise ekle
+  pPinAuthChar = pService->createCharacteristic(
+      CHAR_PIN_AUTH_UUID,
+      BLECharacteristic::PROPERTY_READ |
+          BLECharacteristic::PROPERTY_WRITE);
+  pPinAuthChar->setCallbacks(new PinAuthCharacteristicCallbacks());
 
-    // Ayarlar karakteristiği (bu zaten vardı)
-    pSettingsChar = pService->createCharacteristic(
-                        CHAR_SETTINGS_UUID,
-                        BLECharacteristic::PROPERTY_READ |
-                        BLECharacteristic::PROPERTY_WRITE
-                      );
-    pSettingsChar->setCallbacks(new SettingsCharacteristicCallbacks());
-    
-    // --- EKSİK OLAN VE EKLENMESİ GEREKEN BLOK ---
-    // PIN Doğrulama karakteristiğini oluştur ve servise ekle
-    pPinAuthChar = pService->createCharacteristic(
-                        CHAR_PIN_AUTH_UUID,
-                        BLECharacteristic::PROPERTY_READ |
-                        BLECharacteristic::PROPERTY_WRITE
-                      );
-    pPinAuthChar->setCallbacks(new PinAuthCharacteristicCallbacks());
-
-
-    BLECharacteristic* pDeviceMgmtChar = pService->createCharacteristic(
+  BLECharacteristic *pDeviceMgmtChar = pService->createCharacteristic(
       CHAR_DEVICE_MGMT_UUID,
-      BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_WRITE
-    );
-pDeviceMgmtChar->setCallbacks(new DeviceManagementCallbacks());
+      BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_WRITE);
+  pDeviceMgmtChar->setCallbacks(new DeviceManagementCallbacks());
 
+  // ---------------------------------------------
 
-    // ---------------------------------------------
+  // Durum karakteristiği (bu zaten vardı)
+  pStatusChar = pService->createCharacteristic(
+      CHAR_STATUS_UUID,
+      BLECharacteristic::PROPERTY_NOTIFY);
+  pStatusChar->addDescriptor(new BLE2902());
 
-    // Durum karakteristiği (bu zaten vardı)
-    pStatusChar = pService->createCharacteristic(
-                      CHAR_STATUS_UUID,
-                      BLECharacteristic::PROPERTY_NOTIFY
-                    );
-    pStatusChar->addDescriptor(new BLE2902());
+  pService->start();
 
-    pService->start();
-
-    BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
-    pAdvertising->addServiceUUID(GATE_SERVICE_UUID);
-    pAdvertising->setScanResponse(true);
-    pAdvertising->setMinPreferred(0x06); // iOS bağlantı sorunları için yardımcı olur
-    pAdvertising->setMinPreferred(0x12);
-    BLEDevice::startAdvertising();
-    logMessage("BLE Service started. Advertising...", 0, settings.logLevel);
-
-    
-
-
-  
-  
+  BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
+  pAdvertising->addServiceUUID(GATE_SERVICE_UUID);
+  pAdvertising->setScanResponse(true);
+  pAdvertising->setMinPreferred(0x06); // iOS bağlantı sorunları için yardımcı olur
+  pAdvertising->setMinPreferred(0x12);
+  BLEDevice::startAdvertising();
+  logMessage("BLE Service started. Advertising...", 0, settings.logLevel);
 
   updateLights(); // Başlangıç ışık durumunu ayarla
 
