@@ -205,6 +205,21 @@
         .btn-delete {
             background-color: #f44336 !important;
         }
+
+        .warning-text {
+            display: none;
+            /* Varsayılan olarak gizli */
+            color: #D32F2F;
+            /* Koyu kırmızı renk */
+            font-size: 13px;
+            font-weight: 500;
+            margin-top: 8px;
+            padding: 10px;
+            background-color: #FFEBEE;
+            /* Çok açık kırmızı arka plan */
+            border-radius: 6px;
+            text-align: left;
+        }
     </style>
 </head>
 
@@ -265,8 +280,13 @@
                     </select>
                 </div>
                 <div class="input-group">
-                    <label><input type="checkbox" id="authRequiredCheckbox" style="width:auto; vertical-align: middle;">
-                        Güvenli Mod (HMAC Gerekli)</label>
+                    <label>
+                        <input type="checkbox" id="authRequiredCheckbox" style="width:auto; vertical-align: middle;">
+                        Yüksek Güvenlik Modu (Önerilir)
+                    </label>
+                    <span id="securityWarning" class="warning-text">
+                        ⚠️ Güvenlik devre dışı! Bu modda herhangi bir araç kapıyı çalıştırabilir.
+                    </span>
                 </div>
                 <div class="input-group">
                     <label>Oto. Kapanma Süresi (Sinyal Kaybı): <span id="closeTimeoutValue">30</span>s</label>
@@ -318,6 +338,8 @@
             preCloseWarningValue: document.getElementById('preCloseWarningValue'),
             operationModeSelect: document.getElementById('operationModeSelect'),
             authRequiredCheckbox: document.getElementById('authRequiredCheckbox'),
+            securityWarning: document.getElementById('securityWarning'), // <<< YENİ SATIR
+
             saveSettingsButton: document.getElementById('saveSettingsButton'),
             toast: document.getElementById('toast'),
             newPinInput: document.getElementById('newPinInput'), // <<< EKLENDİ
@@ -331,7 +353,9 @@
         ui.saveSettingsButton.addEventListener('click', writeGateSettings);
         ui.closeTimeoutSlider.addEventListener('input', e => ui.closeTimeoutValue.innerText = e.target.value);
         ui.preCloseWarningSlider.addEventListener('input', e => ui.preCloseWarningValue.innerText = e.target.value);
+        
         ui.newPinInput.addEventListener('input', () => { isPinInputModified = true; });
+ui.authRequiredCheckbox.addEventListener('change', updateSecurityWarning); 
 
         // --- Core Functions ---
 
@@ -488,6 +512,9 @@
                 ui.operationModeSelect.value = settings.opMode || 0;
                 ui.authRequiredCheckbox.checked = settings.authReq !== false;
 
+                // Ayarlar okunduktan sonra uyarının ilk durumunu ayarla
+                updateSecurityWarning(); // <<< YENİ SATIR
+
                 deviceHasPin = settings.pinExists; // Cihazda PIN olup olmadığını kaydet
 
 
@@ -583,6 +610,14 @@
         async function disconnectFromDevice() {
             if (bleDevice && bleDevice.gatt.connected) {
                 await bleDevice.gatt.disconnect();
+            }
+        }
+
+        function updateSecurityWarning() {
+            if (ui.authRequiredCheckbox.checked) {
+                ui.securityWarning.style.display = 'none';
+            } else {
+                ui.securityWarning.style.display = 'block';
             }
         }
 
