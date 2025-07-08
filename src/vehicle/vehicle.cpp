@@ -64,7 +64,6 @@ struct LedPattern
 
 QueueHandle_t ledQueue; // LED görevine komut göndermek için kuyruk
 
-
 Preferences preferences;
 
 // Cihaz ayarları yapısı
@@ -92,7 +91,6 @@ String bleMacAddress = "";
 
 bool isAuthenticated = false; // Kullanıcının kimliği doğrulandı mı?
 
-
 bool authButtonPressed = false;
 unsigned long authButtonPressStartTime = 0;
 bool longPressActionTriggered = false;
@@ -112,16 +110,18 @@ enum VehicleState
 volatile VehicleState currentVehicleState = VEHICLE_IDLE;
 uint8_t tempGatePeerMac[6] = {0};
 
-
 // LED'i anlık yakıp söndüren FreeRTOS görevi
-void ledBlinkTask(void *parameter) {
+void ledBlinkTask(void *parameter)
+{
   LedPattern currentPattern;
   pinMode(INTERNAL_LED_PIN, OUTPUT);
   digitalWrite(INTERNAL_LED_PIN, LED_OFF);
 
-  while (true) {
+  while (true)
+  {
     // 1. Öncelik: Cihaz tarama modunda mı?
-    if (currentVehicleState == VEHICLE_WAITING_FOR_GATE_SCAN) {
+    if (currentVehicleState == VEHICLE_WAITING_FOR_GATE_SCAN)
+    {
       digitalWrite(INTERNAL_LED_PIN, LED_ON);
       vTaskDelay(pdMS_TO_TICKS(1000));
       digitalWrite(INTERNAL_LED_PIN, LED_OFF);
@@ -130,18 +130,23 @@ void ledBlinkTask(void *parameter) {
     }
 
     // 2. Öncelik: Kuyrukta yeni bir desen komutu var mı?
-    if (xQueueReceive(ledQueue, &currentPattern, pdMS_TO_TICKS(20)) == pdPASS) {
+    if (xQueueReceive(ledQueue, &currentPattern, pdMS_TO_TICKS(20)) == pdPASS)
+    {
       // Evet, yeni bir desen geldi. Bunu uygula.
-      for (int i = 0; i < currentPattern.count; i++) {
+      for (int i = 0; i < currentPattern.count; i++)
+      {
         digitalWrite(INTERNAL_LED_PIN, LED_ON);
         vTaskDelay(pdMS_TO_TICKS(currentPattern.duration));
         digitalWrite(INTERNAL_LED_PIN, LED_OFF);
         // Eğer son yanıp sönme değilse, arada bir bekleme süresi bırak
-        if (i < currentPattern.count - 1) {
+        if (i < currentPattern.count - 1)
+        {
           vTaskDelay(pdMS_TO_TICKS(currentPattern.duration));
         }
       }
-    } else {
+    }
+    else
+    {
       // Tarama modunda değilsek ve kuyruk boşsa, LED kapalı kalsın.
       digitalWrite(INTERNAL_LED_PIN, LED_OFF);
     }
@@ -176,6 +181,7 @@ void printSettingsToSerial()
   jsonDoc["warnDuration"] = settings.warnDuration;
   jsonDoc["deviceName"] = settings.deviceName;
   jsonDoc["pinExists"] = !settings.pinCode.isEmpty();
+  jsonDoc["version"] = getFirmwareVersion();
   jsonDoc["buildDate"] = buildDate;
   jsonDoc["buildTime"] = buildTime;
 
@@ -204,7 +210,7 @@ void loadSettings()
     delay(100);
   }
 
-  Serial.print(getTimestamp() + "Ayarlar yüklendi! JSON: ");
+  Serial.print(getTimestamp() + " Ayarlar yüklendi! JSON: ");
   printSettingsToSerial();
 }
 
@@ -567,6 +573,7 @@ void sendSecureCommand(String command)
     memcpy(peerInfo.peer_addr, targetMacBytes, 6);
     peerInfo.channel = FIXED_WIFI_CHANNEL;
     peerInfo.encrypt = false;
+    memcpy(peerInfo.lmk, PMK, 16);
     if (esp_now_add_peer(&peerInfo) != ESP_OK)
     {
       logMessage("Failed to add temporary peer for command.", 0, settings.logLevel);
@@ -634,7 +641,6 @@ void OnDataRecv(const uint8_t *mac_addr, const uint8_t *incomingData, int len)
   LedPattern p_recv = {50, 1}; // 50ms, 1 kere yanıp sön
   xQueueSend(ledQueue, &p_recv, 0);
 
-
   JsonDocument doc;
   DeserializationError error = deserializeJson(doc, incomingData, len);
   if (error)
@@ -652,8 +658,40 @@ void OnDataRecv(const uint8_t *mac_addr, const uint8_t *incomingData, int len)
 
   String gateMac = macToString(mac_addr);
 
+  if (strcmp(msgType, "DISCOVERY_PROBE") == 0)
+  {
+    logMessage("Discovery probe received. Responding...", 1, settings.logLevel);
+
+    // Cevap göndereceğimiz Gate'i geçici olarak peer listesine ekle
+    esp_now_peer_info_t peerInfo = {};
+    memcpy(peerInfo.peer_addr, mac_addr, 6);
+    peerInfo.channel = FIXED_WIFI_CHANNEL;
+    peerInfo.encrypt = false;
+    memcpy(peerInfo.lmk, PMK, 16);
+    if (!esp_now_is_peer_exist(mac_addr))
+    {
+      esp_now_add_peer(&peerInfo);
+    }
+
+    // Cevap mesajını oluştur
+    JsonDocument responseDoc;
+    responseDoc["msgType"] = "DISCOVERY_RESPONSE";
+    // Cevabın içine kendi cihaz adımızı ekliyoruz
+    responseDoc["deviceName"] = settings.deviceName;
+
+    char jsonBuffer[128];
+    serializeJson(responseDoc, jsonBuffer);
+
+    // Cevabı doğrudan soruyu soran Gate'e unicast olarak gönder
+    esp_now_send(mac_addr, (const uint8_t *)jsonBuffer, strlen(jsonBuffer));
+
+    // Gönderimden sonra geçici peer'i silebiliriz.
+    // OnDataSent callback'i bu iş için daha güvenilir olabilir ama şimdilik burada bırakalım.
+    esp_now_del_peer(mac_addr);
+  }
+
   // --- 1. EŞLEŞME ADIMI: Tarama İsteğine Cevap ---
-  if (strcmp(msgType, "SCAN_REQUEST") == 0 && currentVehicleState == VEHICLE_WAITING_FOR_GATE_SCAN)
+  else if (strcmp(msgType, "SCAN_REQUEST") == 0 && currentVehicleState == VEHICLE_WAITING_FOR_GATE_SCAN)
   {
     logMessage("SCAN_REQUEST recieved! Replying with AUTH_ACK...", 0, settings.logLevel);
 
@@ -684,6 +722,20 @@ void OnDataRecv(const uint8_t *mac_addr, const uint8_t *incomingData, int len)
   // --- 2. EŞLEŞME ADIMI: Anahtar Teslimini İşleme ---
   else if (strcmp(msgType, "KEY_DELIVERY") == 0)
   {
+
+    // 1. Gönderen Gate'i peer olarak ekle
+    esp_now_peer_info_t peerInfo = {};
+    memcpy(peerInfo.peer_addr, mac_addr, 6);
+    peerInfo.channel = FIXED_WIFI_CHANNEL;
+    peerInfo.encrypt = false;
+    memcpy(peerInfo.lmk, PMK, 16); // PSK paylaşımı
+
+    if (esp_now_add_peer(&peerInfo) != ESP_OK)
+    {
+      logMessage("Failed to add Gate as peer for KEY_ACK", 0, settings.logLevel);
+      return;
+    }
+
     const char *encryptedKey = doc["key"];
     if (encryptedKey)
     {
@@ -707,27 +759,36 @@ void OnDataRecv(const uint8_t *mac_addr, const uint8_t *incomingData, int len)
       keyAckDoc["msgType"] = "KEY_ACK";
       char ackBuffer[32];
       serializeJson(keyAckDoc, ackBuffer);
+
+      
       esp_now_send(mac_addr, (const uint8_t *)ackBuffer, strlen(ackBuffer));
-
-      logMessage("Stored new key for " + gateMac + ". Sent KEY_ACK.", 0, settings.logLevel);
-
       esp_now_del_peer(mac_addr);
 
+      logMessage("Stored new key for " + gateMac + ". Sent KEY_ACK.", 0, settings.logLevel);
 
       // Eşleşme tamamlandı, tarama modundan çık ve başarı LED'ini yak
       currentVehicleState = VEHICLE_IDLE;
       LedPattern p_success = {10000, 1}; // 10 saniye boyunca yanık kal
       xQueueSend(ledQueue, &p_success, 0);
-
+    }
+    else
+    {
+      // Gate'in teyidi alma ihtimalini artırmak için KEY_ACK'i tekrar gönder,
+      // ama kaydetme gibi işlemleri tekrar yapma.
+      logMessage("Duplicate KEY_DELIVERY received, re-sending KEY_ACK.", 1, settings.logLevel);
+      JsonDocument keyAckDoc;
+      keyAckDoc["msgType"] = "KEY_ACK";
+      char ackBuffer[32];
+      serializeJson(keyAckDoc, ackBuffer);
+      esp_now_send(mac_addr, (const uint8_t *)ackBuffer, strlen(ackBuffer));
     }
   }
   // --- 3. NORMAL ÇALIŞMA: Beacon'ları Dinleyip Otomatik Komut Gönderme ---
   else if (strcmp(msgType, "BEACON") == 0)
   {
 
-      LedPattern p_success = {200, 1};
-      xQueueSend(ledQueue, &p_success, 0);
-    
+    LedPattern p_success = {200, 1};
+    xQueueSend(ledQueue, &p_success, 0);
 
     // Bu beacon, bizim daha önce eşleştiğimiz bir kapıdan mı geliyor?
     if (pairedGates.count(gateMac))
@@ -736,15 +797,18 @@ void OnDataRecv(const uint8_t *mac_addr, const uint8_t *incomingData, int len)
 
       // Gerekli bilgileri al (nonce ve hedef kapı MAC)
       // --- YENİ VE DOĞRU NONCE KONTROLÜ ---
-        // Beacon içinde "nonce" anahtarı var mı diye kontrol et
-        if (!doc["nonce"].isNull()) { // <<< DEĞİŞTİRİLMİŞ SATIR
-            // Evet var, güvenli moddayız. Nonce'ı kaydet.
-            lastNonceFromGate = doc["nonce"].as<String>();
-        } else {
-            // Hayır yok, güvensiz moddayız. Nonce'ı TEMİZLE.
-            // !!! SORUNUN ÇÖZÜMÜ BU SATIR !!!
-            lastNonceFromGate = ""; 
-        }
+      // Beacon içinde "nonce" anahtarı var mı diye kontrol et
+      if (!doc["nonce"].isNull())
+      { // <<< DEĞİŞTİRİLMİŞ SATIR
+        // Evet var, güvenli moddayız. Nonce'ı kaydet.
+        lastNonceFromGate = doc["nonce"].as<String>();
+      }
+      else
+      {
+        // Hayır yok, güvensiz moddayız. Nonce'ı TEMİZLE.
+        // !!! SORUNUN ÇÖZÜMÜ BU SATIR !!!
+        lastNonceFromGate = "";
+      }
       targetGateMac = gateMac;
 
       String commandToSend;
@@ -767,11 +831,11 @@ void OnDataRecv(const uint8_t *mac_addr, const uint8_t *incomingData, int len)
 // ESP-NOW veri gönderildiğinde çağrılır
 void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status)
 {
-   logMessage("Last Packet to " + macToString(mac_addr) + " Send Status: " + (status == ESP_NOW_SEND_SUCCESS ? "Success" : "Fail"), 1, settings.logLevel);
+  logMessage("Last Packet to " + macToString(mac_addr) + " Send Status: " + (status == ESP_NOW_SEND_SUCCESS ? "Success" : "Fail"), 1, settings.logLevel);
 
-
-  if (status != ESP_NOW_SEND_SUCCESS) {
-    //logMessage("Last Packet to " + macToString(mac_addr) + " Send Status: Fail", 0, settings.logLevel);
+  if (status != ESP_NOW_SEND_SUCCESS)
+  {
+    // logMessage("Last Packet to " + macToString(mac_addr) + " Send Status: Fail", 0, settings.logLevel);
   }
 
   // Gönderim bittikten sonra, geçici olarak eklediğimiz peer'i sil.
@@ -783,14 +847,17 @@ void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status)
 
   if (!isBroadcast)
   {
-   //esp_now_del_peer(mac_addr);
+    // esp_now_del_peer(mac_addr);
   }
 }
 
 void setup()
 {
   Serial.begin(115200);
-  Serial.println(getTimestamp() + " Vehicle Control System Starting...");
+  Serial.println();
+
+  logMessage("Vehicle Control System Starting...", 0, settings.logLevel);
+  logMessage("Version: " + getFirmwareVersion(), 0, settings.logLevel);
 
   pinMode(INTERNAL_LED_PIN, OUTPUT);
   digitalWrite(INTERNAL_LED_PIN, LED_OFF);
@@ -810,7 +877,8 @@ void setup()
 
   // LED kuyruğunu oluştur
   ledQueue = xQueueCreate(10, sizeof(LedPattern));
-  if (ledQueue == NULL) {
+  if (ledQueue == NULL)
+  {
     logMessage("Failed to create LED queue", 0, settings.logLevel);
   }
 
@@ -824,7 +892,6 @@ void setup()
       NULL, // Task handle
       0     // Core
   );
-
 
   // WiFi'yi istasyon moduna ayarla
   WiFi.mode(WIFI_STA);
@@ -899,9 +966,6 @@ void setup()
   BLEDevice::startAdvertising();
   Serial.println(getTimestamp() + " BLE server başladı, ayarlar bekleniyor...");
 
-  
-
-  
   Serial.println(getTimestamp() + " Setup tamamlandı...");
 }
 

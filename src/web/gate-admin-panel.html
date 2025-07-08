@@ -220,11 +220,129 @@
             border-radius: 6px;
             text-align: left;
         }
+
+
+        .scan-container {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+
+        .btn-scan {
+            flex-shrink: 0;
+            /* Butonun boyutu sabit kalsın */
+            width: auto;
+            padding: 10px 15px;
+            font-size: 14px;
+            background-color: #28a745 !important;
+            /* Yeşil renk */
+            margin-bottom: 0;
+        }
+
+        .btn-scan:hover {
+            background-color: #218838 !important;
+        }
+
+        .progress-container {
+            width: 100%;
+            height: 10px;
+            background-color: #e9ecef;
+            border-radius: 5px;
+            overflow: hidden;
+            display: none;
+            /* Varsayılan olarak gizli */
+        }
+
+        .progress-bar {
+            height: 100%;
+            width: 100%;
+            background-color: #007AFF;
+            border-radius: 5px;
+            transition: width 0.5s ease-out;
+            /* Genişlik değişimini yumuşat */
+        }
+
+        /* JavaScript ile bu class eklendiğinde animasyon başlayacak */
+        .scanning .progress-container {
+            display: block !important;
+        }
+
+        .scanning .progress-bar {
+            animation: scanProgressAnimation 10s linear forwards;
+            display: block !important;
+
+        }
+
+        @keyframes scanProgressAnimation {
+            from {
+                width: 100%;
+            }
+
+            to {
+                width: 0%;
+            }
+        }
+
+
+
+
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1001;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            overflow: auto;
+            background-color: rgba(0, 0, 0, 0.5);
+        }
+
+        .modal-content {
+            background-color: #fefefe;
+            margin: 15% auto;
+            padding: 20px;
+            border: 1px solid #888;
+            width: 90%;
+            max-width: 450px;
+            border-radius: 10px;
+            text-align: left;
+        }
+
+        .close-button {
+            color: #aaa;
+            float: right;
+            font-size: 28px;
+            font-weight: bold;
+            cursor: pointer;
+        }
     </style>
 </head>
 
 <body>
     <div class="container">
+
+        <div id="foundDeviceModal" class="modal">
+            <div class="modal-content">
+                <span class="close-button" onclick="closeModal()">&times;</span>
+                <h3 id="modalTitle">Yeni Cihaz Bulundu</h3>
+                <div class="input-group">
+                    <label>Cihaz Adı:</label>
+                    <p id="foundDeviceName" style="font-weight:bold;"></p>
+                </div>
+                <div class="input-group">
+                    <label>MAC Adresi:</label>
+                    <p id="foundDeviceMac"></p>
+                </div>
+                <div class="input-group">
+                    <label for="nicknameInput">Bir Takma İsim Belirleyin:</label>
+                    <input type="text" id="nicknameInput" placeholder="Örn: Mavi Araba">
+                </div>
+                <button id="pairButton">Ekle ve Eşleştir</button>
+            </div>
+        </div>
+
         <h2 id="deviceNameDisplay" style="display: none;">Gate Kontrol Paneli</h2>
 
         <div id="connectScreen" class="screen">
@@ -250,6 +368,12 @@
 
             <div id="deviceManagementScreen" class="tab-content">
                 <h3>Eşleşmiş Araçlar</h3>
+                <div class="scan-container">
+                    <button id="scanButton" class="btn-scan">Yakındaki Araçları Tara</button>
+                    <div id="scanProgressContainer" class="progress-container">
+                        <div id="scanProgressBar" class="progress-bar"></div>
+                    </div>
+                </div>
                 <div id="deviceList"><i>Liste Yükleniyor...</i></div>
             </div>
 
@@ -342,8 +466,14 @@
 
             saveSettingsButton: document.getElementById('saveSettingsButton'),
             toast: document.getElementById('toast'),
-            newPinInput: document.getElementById('newPinInput'), // <<< EKLENDİ
-            pinStatus: document.getElementById('pinStatus')      // <<< EKLENDİ
+            newPinInput: document.getElementById('newPinInput'),
+            pinStatus: document.getElementById('pinStatus'),
+
+            scanButton: document.getElementById('scanButton'),
+            scanProgressBar: document.getElementById('scanProgressBar'),
+            scanProgressContainer: document.getElementById('scanProgressContainer'),
+            foundDeviceModal: document.getElementById('foundDeviceModal')
+
         };
 
         // Event Listeners
@@ -353,11 +483,110 @@
         ui.saveSettingsButton.addEventListener('click', writeGateSettings);
         ui.closeTimeoutSlider.addEventListener('input', e => ui.closeTimeoutValue.innerText = e.target.value);
         ui.preCloseWarningSlider.addEventListener('input', e => ui.preCloseWarningValue.innerText = e.target.value);
-        
+
         ui.newPinInput.addEventListener('input', () => { isPinInputModified = true; });
-ui.authRequiredCheckbox.addEventListener('change', updateSecurityWarning); 
+        ui.authRequiredCheckbox.addEventListener('change', updateSecurityWarning);
+
+        ui.scanButton.addEventListener('click', startVehicleScan);
+
 
         // --- Core Functions ---
+
+        function closeModal() { ui.foundDeviceModal.style.display = 'none'; }
+
+
+
+        async function startDiscoveryScan() {
+            showToast("Tarama başlatılıyor...", "info");
+            await writeToDeviceMgmtChar({ action: "start_discovery_scan" });
+        }
+
+
+        function handleStatusNotifications(event) {
+            const rawData = new TextDecoder().decode(event.target.value);
+            let data;
+
+            // Gelen verinin JSON olup olmadığını anlamak için ayrıştırmayı dene
+            try {
+                data = JSON.parse(rawData);
+            } catch (e) {
+                // Eğer JSON değilse, bu "AUTH_SUCCESS" gibi basit bir metin mesajıdır.
+                // Bu panelde PIN yönetimi olmadığı için şimdilik sadece loglayabiliriz.
+                console.log("Status update (text):", rawData);
+                // Örnek: if (rawData === "SETTINGS_UPDATED") { showToast("Ayarlar güncellendi!"); }
+                return; // Metin tabanlı bildirimden sonra işlemi bitir.
+            }
+
+            // Eğer veri JSON ise ve içinde bir "event" anahtarı varsa...
+            if (data && data.event) {
+
+                switch (data.event) {
+
+                    case 'device_found':
+
+
+                        // Cihaz bulundu olayı
+                        showToast(`Cihaz bulundu: ${data.deviceName || data.mac}`, "info");
+                        if (document.body.classList.contains('scanning')) {
+                            finishScanUI();
+                        }
+
+                        // --- AKILLI MODAL İÇERİĞİ ---
+                        // Cihazın durumuna göre modal penceresinin başlığını ve butonunu ayarla
+                        if (data.isPaired) {
+                            document.getElementById('modalTitle').innerText = "Kayıtlı Cihaz Bulundu";
+                            document.getElementById('pairButton').innerText = "Anahtarı Güncelle ve Yeniden Eşleştir";
+                        } else {
+                            document.getElementById('modalTitle').innerText = "Yeni Cihaz Bulundu";
+                            document.getElementById('pairButton').innerText = "Ekle ve Eşleştir";
+                        }
+                        // -----------------------------
+
+                        // Modal'daki diğer bilgileri doldur
+                        document.getElementById('foundDeviceName').innerText = data.deviceName || "Bilinmiyor";
+                        document.getElementById('foundDeviceMac').innerText = data.mac;
+                        document.getElementById('nicknameInput').value = data.deviceName || ""; // Takma adı cihaz adıyla önceden doldur
+
+                        // "Ekle/Güncelle" butonunun tıklandığında ne yapacağını ayarla
+                        document.getElementById('pairButton').onclick = () => {
+                            const payload = {
+                                action: "pair_new_device",
+                                mac: data.mac,
+                                vehicleName: data.deviceName,
+                                nickname: document.getElementById('nicknameInput').value
+                            };
+                            writeToDeviceMgmtChar(payload);
+
+                            const actionText = data.isPaired ? "Anahtar yenileme" : "Eşleştirme";
+                            showToast(`${actionText} süreci başlatıldı...`, "info");
+                            closeModal();
+                        };
+
+                        // Hazırlanan modal penceresini göster
+                        ui.foundDeviceModal.style.display = 'flex';
+                        break;
+
+                    case 'scan_failed':
+                        // Tarama başarısız oldu olayı
+                        showToast("Tarama zaman aşımına uğradı, yeni cihaz bulunamadı.", "error");
+                        break;
+
+                    case 'pairing_complete':
+
+                        document.body.classList.remove('scanning');
+                        ui.scanButton.innerText = "Yakındaki Araçları Tara";
+                        ui.scanButton.disabled = false;
+
+                        // Eşleşme tamamlandı olayı (gelecekteki kullanım için)
+                        showToast("Yeni cihaz başarıyla eşleştirildi!", "success");
+                        setTimeout(renderDeviceList, 1000); // Listeyi 1 saniye sonra yenile
+                        break;
+
+                    // Buraya gelecekte başka event'ler eklenebilir
+                }
+            }
+        }
+
 
         function showScreen(screenId) {
             document.querySelectorAll('.screen').forEach(s => s.style.display = 'none');
@@ -388,6 +617,14 @@ ui.authRequiredCheckbox.addEventListener('change', updateSecurityWarning);
                 settingsCharacteristic = await service.getCharacteristic(CHAR_SETTINGS_UUID);
                 pinAuthCharacteristic = await service.getCharacteristic(CHAR_PIN_AUTH_UUID);
                 deviceMgmtCharacteristic = await service.getCharacteristic(CHAR_DEVICE_MGMT_UUID);
+
+                // 1. Durum (Status) Karakteristiğine Eriş
+                statusCharacteristic = await service.getCharacteristic(CHAR_STATUS_UUID);
+
+                // 2. Bu karakteristikten gelecek bildirimleri dinlemeye başla
+                await statusCharacteristic.startNotifications();
+                statusCharacteristic.addEventListener('characteristicvaluechanged', handleStatusNotifications);
+
 
                 ui.deviceNameDisplay.innerText = bleDevice.name || 'GATE';
                 ui.deviceNameDisplay.style.display = 'block';
@@ -420,6 +657,39 @@ ui.authRequiredCheckbox.addEventListener('change', updateSecurityWarning);
                 showToast("PIN gönderildi, ayarlar okunuyor...");
                 await showMainContentAndLoadData();
             } catch (error) { showToast("PIN gönderilemedi veya yanlış.", "error"); }
+        }
+
+
+        function startVehicleScan() {
+            // Eğer zaten tarama yapılıyorsa, tekrar başlatma
+            if (document.body.classList.contains('scanning')) return;
+
+            // Animasyonu başlatmak için body'e class ekle
+            document.body.classList.add('scanning');
+
+            // Tarama başladığında butonun metnini değiştir ve pasif yap
+            ui.scanButton.innerText = "Taranıyor...";
+            ui.scanButton.disabled = true;
+
+            // İlerleme çubuğunu göster
+            ui.scanProgressContainer.style.display = 'block';
+
+            showToast("Yakındaki araçlar 10 saniye boyunca taranıyor...", "info");
+
+            // BU NOKTADA, GATE'E TARAMAYI BAŞLATMASI İÇİN BLE KOMUTU GÖNDERİLİR
+            const payload = { action: "start_discovery_scan" };
+            writeToDeviceMgmtChar(payload);
+
+            // 10 saniye sonra animasyonu ve buton durumunu sıfırla
+            setTimeout(finishScanUI, 10000);
+        }
+
+        function finishScanUI() {
+            document.body.classList.remove('scanning');
+            ui.scanButton.innerText = "Yakındaki Araçları Tara";
+            ui.scanButton.disabled = false;
+            ui.scanProgressContainer.style.display = 'none';
+            showToast("Tarama tamamlandı.", "success");
         }
 
         async function showMainContentAndLoadData() {
@@ -526,8 +796,8 @@ ui.authRequiredCheckbox.addEventListener('change', updateSecurityWarning);
                 } else {
                     ui.newPinInput.value = "";
                     ui.newPinInput.placeholder = "Yeni PIN (4 hane)";
-                   ui.pinStatus.innerText = "⚠️ PIN ayarlı değil! Herkes ayarlara erişebilir.";
-            ui.pinStatus.style.color = "#D32F2F"; // Dikkat çekici kırmızı renk
+                    ui.pinStatus.innerText = "⚠️ PIN ayarlı değil! Herkes ayarlara erişebilir.";
+                    ui.pinStatus.style.color = "#D32F2F"; // Dikkat çekici kırmızı renk
                 }
                 isPinInputModified = false; // Bayrağı sıfırla
 

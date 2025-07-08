@@ -116,7 +116,10 @@ const unsigned long SETTINGS_SAVE_DELAY = 5000; // Ayarları kaydetmek için bek
 bool isDeviceNameChanged = false;               // Cihaz adının değişip değişmediğini kontrol eden bayrak
 bool shouldBeep = false;                        // Motor hareket halindeyken bip sesini kontrol eder
 
-struct SecurityState {
+unsigned long discoveryScanStartTime = 0; // Eşleşme taraması için başlangıç zamanı
+
+struct SecurityState
+{
   int pinFailedAttempts = 0;
   unsigned long pinLockoutEndTime = 0;
 };
@@ -127,7 +130,6 @@ BLECharacteristic *pSettingsChar;
 BLECharacteristic *pStatusChar;
 BLECharacteristic *pPinAuthChar;
 bool isAuthenticated = false;
-
 
 // Beacon yayını için zamanlama değişkenleri
 unsigned long lastBeaconTime = 0;
@@ -153,8 +155,13 @@ enum AuthMode
 {
   AUTH_IDLE,
   AUTH_SCANNING,
-  AUTH_SENDING_KEY
+  AUTH_SENDING_KEY,
+  AUTH_DISCOVERY_SCAN
 };
+
+String foundVehicleMac = "";
+String foundVehicleName = "";
+
 volatile AuthMode currentAuthMode = AUTH_IDLE;
 String pendingVehicleMac = "";                   // Teyit beklenen aracın MAC adresi
 String pendingEncryptedKey = "";                 // Gönderilecek şifreli anahtar
@@ -172,14 +179,16 @@ void addMacToRegistereds(const uint8_t *mac);
 bool isMacRegistered(const uint8_t *mac);
 
 // ========================= Yardımcı Fonksiyonlar =========================
-void saveSecurityState() {
+void saveSecurityState()
+{
   preferences.begin("security", false); // "security" adında yeni bir alan aç (yazma)
   preferences.putInt("fails", securityState.pinFailedAttempts);
   preferences.putULong("lock_end", securityState.pinLockoutEndTime);
   preferences.end();
 }
 
-void loadSecurityState() {
+void loadSecurityState()
+{
   preferences.begin("security", true); // "security" alanını aç (okuma)
   securityState.pinFailedAttempts = preferences.getInt("fails", 0);
   securityState.pinLockoutEndTime = preferences.getULong("lock_end", 0);
@@ -421,8 +430,7 @@ class DeviceManagementCallbacks : public BLECharacteristicCallbacks
       JsonObject device = array.add<JsonObject>();
       device["mac"] = pair.first;
       device["nickname"] = pair.second.nickname;
-              device["vehicleName"] = pair.second.vehicleName; // <<< YENİ SATIR
-
+      device["vehicleName"] = pair.second.vehicleName; // <<< YENİ SATIR
     }
     String jsonString;
     serializeJson(doc, jsonString);
@@ -442,7 +450,71 @@ class DeviceManagementCallbacks : public BLECharacteristicCallbacks
       if (!action)
         return;
 
-      if (strcmp(action, "update_nickname") == 0)
+      if (strcmp(action, "start_discovery_scan") == 0)
+      {
+        // Panelden "Tara" komutu geldi
+        if (currentAuthMode == AUTH_IDLE)
+        {
+          currentAuthMode = AUTH_DISCOVERY_SCAN;
+          lastScanBroadcastTime = 0; // Taramayı hemen başlatmak için
+          discoveryScanStartTime = millis();
+          logMessage("Discovery scan started from panel.", 0, settings.logLevel);
+        }
+      }
+      else if (strcmp(action, "pair_new_device") == 0)
+      {
+        // Panelden gelen MAC adresi ve takma isimle tam bir eşleşme süreci başlat
+        String mac = doc["mac"];
+        String nickname = doc["nickname"];
+        String vehicleName = doc["vehicleName"];
+
+        if (!mac.isEmpty())
+        {
+          uint8_t macBytes[6];
+          sscanf(mac.c_str(), "%2hhx:%2hhx:%2hhx:%2hhx:%2hhx:%2hhx", &macBytes[0], &macBytes[1], &macBytes[2], &macBytes[3], &macBytes[4], &macBytes[5]);
+
+          // Aracı geçici peer olarak ekle
+          esp_now_peer_info_t peerInfo = {};
+          memcpy(peerInfo.peer_addr, macBytes, 6);
+          peerInfo.channel = FIXED_WIFI_CHANNEL;
+          peerInfo.encrypt = false;
+          memcpy(peerInfo.lmk, PMK, 16); // Peer'e anahtar bilgisini ekle
+          // Peer
+          if (!esp_now_is_peer_exist(macBytes))
+          {
+            esp_now_add_peer(&peerInfo);
+          }
+
+          // Yeni anahtar oluştur ve kaydet
+          uint8_t newSharedKey[16];
+          for (int i = 0; i < 16; i++)
+          {
+            newSharedKey[i] = esp_random() % 256;
+          }
+          char newSharedKeyHex[33];
+          for (int i = 0; i < 16; i++)
+          {
+            sprintf(newSharedKeyHex + i * 2, "%02x", newSharedKey[i]);
+          }
+
+          RegisteredVehicleInfo newVehicle;
+          newVehicle.sharedKey = String(newSharedKeyHex);
+          newVehicle.nickname = nickname;
+          newVehicle.vehicleName = vehicleName;
+          registeredDevices[mac] = newVehicle;
+          saveRegisteredDevices();
+
+          // Anahtar teslim sürecini başlat
+          String keyToSend = String((char *)newSharedKey, 16);
+          pendingEncryptedKey = encryptDecrypt(keyToSend, PMK, sizeof(PMK));
+          pendingVehicleMac = mac;
+          currentAuthMode = AUTH_SENDING_KEY;
+          keySendStartTime = millis();
+          lastKeySendTime = 0;
+          logMessage("Pairing new device from panel: " + mac, 0, settings.logLevel);
+        }
+      }
+      else if (strcmp(action, "update_nickname") == 0)
       {
         String mac = doc["mac"];
         String nickname = doc["nickname"];
@@ -669,6 +741,24 @@ void stateMachineTask(void *pvParameters)
       digitalWrite(BUZZER_PIN, BUZZER_OFF);
     }
 
+    if (false)
+    {
+      // Tarama sonunda eşleşme onayı sonrası zamanlayıcı sıfırlanınca işletilecek kod
+      if (currentAuthMode == AUTH_SENDING_KEY && keySendStartTime != 0 &&
+          currentTime - keySendStartTime > KEY_SEND_DURATION_MS)
+      {
+        logMessage("KEY_DELIVERY timeout for " + pendingVehicleMac + ". Pairing failed.", 0, settings.logLevel);
+        uint8_t targetMac[6];
+        sscanf(pendingVehicleMac.c_str(), "%2hhx:%2hhx:%2hhx:%2hhx:%2hhx:%2hhx",
+               &targetMac[0], &targetMac[1], &targetMac[2],
+               &targetMac[3], &targetMac[4], &targetMac[5]);
+        esp_now_del_peer(targetMac);
+        registeredDevices.erase(pendingVehicleMac);
+        saveRegisteredDevices();
+        currentAuthMode = AUTH_IDLE;
+        keySendStartTime = 0;
+      }
+    }
     vTaskDelay(pdMS_TO_TICKS(100));
   }
 }
@@ -750,14 +840,6 @@ void handleCommand(const char *command)
 void OnDataRecv(const uint8_t *mac_addr, const uint8_t *incomingData, int len)
 {
 
-  if (settings.operationMode != MODE_NORMAL)
-  {
-    logMessage("Ignoring incoming packet due to override mode.", 1, settings.logLevel);
-    LedPattern p_ack = {50, 3}; // 50ms, 1 kere
-    xQueueSend(ledQueue, &p_ack, 0);
-    return;
-  }
-
   String message = String((char *)incomingData, len);
   Serial.print("Data as String: ");
   Serial.println(message);
@@ -785,7 +867,37 @@ void OnDataRecv(const uint8_t *mac_addr, const uint8_t *incomingData, int len)
 
   // === EŞLEŞME MESAJLARI ===
 
-  // 1. Adım: Araçtan eşleşme onayı geldi
+  if (strcmp(msgType, "DISCOVERY_RESPONSE") == 0)
+  {
+    // Eğer keşif modundaysak ve henüz bir cihaz bulmadıysak
+    if (currentAuthMode == AUTH_DISCOVERY_SCAN)
+    {
+      currentAuthMode = AUTH_IDLE; // Taramayı hemen durdur
+
+      foundVehicleMac = macToString(mac_addr);
+      foundVehicleName = doc["deviceName"].as<String>();
+
+      if (isMacRegistered(foundVehicleMac))
+      {
+        logMessage("Found vehicle is already registered: " + foundVehicleMac + " (" + foundVehicleName + ")", 0, settings.logLevel);
+        //return; // Zaten kayıtlıysa, başka bir şey yapma
+      }
+
+      logMessage("First vehicle found: " + foundVehicleMac + " (" + foundVehicleName + ")", 0, settings.logLevel);
+
+      // Panele bulduğumuz cihazın bilgilerini gönder
+      JsonDocument foundDoc;
+      foundDoc["event"] = "device_found";
+      foundDoc["mac"] = foundVehicleMac;
+      foundDoc["deviceName"] = foundVehicleName;
+
+      String output;
+      serializeJson(foundDoc, output);
+      pStatusChar->setValue(output.c_str());
+      pStatusChar->notify();
+    }
+  }
+
   if (strcmp(msgType, "AUTH_ACK") == 0)
   {
     if (currentAuthMode == AUTH_SCANNING)
@@ -797,6 +909,7 @@ void OnDataRecv(const uint8_t *mac_addr, const uint8_t *incomingData, int len)
       memcpy(peerInfo.peer_addr, mac_addr, 6);
       peerInfo.channel = FIXED_WIFI_CHANNEL;
       peerInfo.encrypt = false;
+      memcpy(peerInfo.lmk, PMK, 16); // Peer'e anahtar bilgisini ekle
 
       if (esp_now_add_peer(&peerInfo) != ESP_OK)
       {
@@ -854,6 +967,17 @@ void OnDataRecv(const uint8_t *mac_addr, const uint8_t *incomingData, int len)
       pendingVehicleMac = "";
       pendingEncryptedKey = "";
 
+      // Pairing zamanlayıcısını sıfırla
+      keySendStartTime = 0;
+
+      // BLE paneline pairing tamamlandı mesajı gönder
+      JsonDocument doc;
+      doc["event"] = "pairing_complete";
+      String output;
+      serializeJson(doc, output);
+      pStatusChar->setValue(output.c_str());
+      pStatusChar->notify();
+
       LedPattern p = {10000, 1};
       xQueueSend(ledQueue, &p, 0); // Başarı sinyali
     }
@@ -864,6 +988,12 @@ void OnDataRecv(const uint8_t *mac_addr, const uint8_t *incomingData, int len)
   // Güvenli komut geldi
   else if (strcmp(msgType, "COMMAND") == 0)
   {
+    if (settings.operationMode != MODE_NORMAL)
+    {
+      logMessage("Ignoring COMMAND: Gate is not in NORMAL mode.", 1, settings.logLevel);
+      return;
+    }
+
     const char *command = doc["command"];
     if (!command)
     {
@@ -938,7 +1068,7 @@ class MyServerCallbacks : public BLEServerCallbacks
 {
   void onConnect(BLEServer *pServer)
   {
-     isAuthenticated = false;
+    isAuthenticated = false;
     logMessage("BLE Client Connected.", 0, settings.logLevel);
   }
   void onDisconnect(BLEServer *pServer)
@@ -950,11 +1080,13 @@ class MyServerCallbacks : public BLEServerCallbacks
 
 class SettingsCharacteristicCallbacks : public BLECharacteristicCallbacks
 {
-  void onRead(BLECharacteristic *pCharacteristic) {
+  void onRead(BLECharacteristic *pCharacteristic)
+  {
     // 1. Yetki Kontrolü
-    if (!isAuthenticated && !settings.pinCode.isEmpty()) {
-        pCharacteristic->setValue("{\"error\":\"Authentication required\"}");
-        return;
+    if (!isAuthenticated && !settings.pinCode.isEmpty())
+    {
+      pCharacteristic->setValue("{\"error\":\"Authentication required\"}");
+      return;
     }
 
     // 2. Tüm Ayarları İçeren JSON'u Oluştur
@@ -972,29 +1104,31 @@ class SettingsCharacteristicCallbacks : public BLECharacteristicCallbacks
     serializeJson(jsonDoc, jsonString);
     pCharacteristic->setValue(jsonString.c_str());
     logMessage("Sent full settings over BLE.", 1, settings.logLevel);
-}
+  }
 
   void onWrite(BLECharacteristic *pCharacteristic)
-{
+  {
     // 1. Yetki Kontrolü
     // Eğer PIN ayarlıysa ve kullanıcı kimliğini doğrulamadıysa, işlemi hemen reddet.
     if (!isAuthenticated && !settings.pinCode.isEmpty())
     {
-        logMessage("Settings write rejected: Not authenticated", 0, settings.logLevel);
-        pStatusChar->setValue("AUTH_REQUIRED");
-        pStatusChar->notify();
-        return;
+      logMessage("Settings write rejected: Not authenticated", 0, settings.logLevel);
+      pStatusChar->setValue("AUTH_REQUIRED");
+      pStatusChar->notify();
+      return;
     }
 
     // 2. Gelen Veriyi Al ve JSON Olarak Ayrıştır
     std::string value = pCharacteristic->getValue();
-    if (value.empty()) return;
+    if (value.empty())
+      return;
 
     JsonDocument jsonDoc;
     DeserializationError error = deserializeJson(jsonDoc, value);
-    if(error){
-        logMessage("JSON parse error on write: " + String(error.c_str()), 0, settings.logLevel);
-        return;
+    if (error)
+    {
+      logMessage("JSON parse error on write: " + String(error.c_str()), 0, settings.logLevel);
+      return;
     }
 
     logMessage("Received new settings via BLE. Processing...", 1, settings.logLevel);
@@ -1003,81 +1137,94 @@ class SettingsCharacteristicCallbacks : public BLECharacteristicCallbacks
     // 3. Ayarları Tek Tek Kontrol Et ve Güncelle
 
     // Cihaz Adı
-    if (jsonDoc["deviceName"].is<const char*>()) {
-        String newDeviceName = jsonDoc["deviceName"].as<String>();
-        // Karşılaştırma yaparken char dizisini String'e çevir
-        if (String(settings.deviceName) != newDeviceName) {
-            strlcpy(settings.deviceName, newDeviceName.c_str(), sizeof(settings.deviceName));
-            logMessage("Setting updated: deviceName -> " + newDeviceName, 0, settings.logLevel);
-            anyChangeDetected = true;
-        }
+    if (jsonDoc["deviceName"].is<const char *>())
+    {
+      String newDeviceName = jsonDoc["deviceName"].as<String>();
+      // Karşılaştırma yaparken char dizisini String'e çevir
+      if (String(settings.deviceName) != newDeviceName)
+      {
+        strlcpy(settings.deviceName, newDeviceName.c_str(), sizeof(settings.deviceName));
+        logMessage("Setting updated: deviceName -> " + newDeviceName, 0, settings.logLevel);
+        anyChangeDetected = true;
+      }
     }
 
     // Otomatik Kapanma Süresi
-    if (jsonDoc["closeTimeout"].is<int>() && settings.closeTimeout != jsonDoc["closeTimeout"].as<int>()) {
-        settings.closeTimeout = jsonDoc["closeTimeout"];
-        logMessage("Setting updated: closeTimeout -> " + String(settings.closeTimeout), 0, settings.logLevel);
-        anyChangeDetected = true;
+    if (jsonDoc["closeTimeout"].is<int>() && settings.closeTimeout != jsonDoc["closeTimeout"].as<int>())
+    {
+      settings.closeTimeout = jsonDoc["closeTimeout"];
+      logMessage("Setting updated: closeTimeout -> " + String(settings.closeTimeout), 0, settings.logLevel);
+      anyChangeDetected = true;
     }
-    
+
     // Kapanma Öncesi Uyarı
-    if (jsonDoc["preCloseWarning"].is<int>() && settings.preCloseWarning != jsonDoc["preCloseWarning"].as<int>()) {
-        settings.preCloseWarning = jsonDoc["preCloseWarning"];
-        logMessage("Setting updated: preCloseWarning -> " + String(settings.preCloseWarning), 0, settings.logLevel);
-        anyChangeDetected = true;
+    if (jsonDoc["preCloseWarning"].is<int>() && settings.preCloseWarning != jsonDoc["preCloseWarning"].as<int>())
+    {
+      settings.preCloseWarning = jsonDoc["preCloseWarning"];
+      logMessage("Setting updated: preCloseWarning -> " + String(settings.preCloseWarning), 0, settings.logLevel);
+      anyChangeDetected = true;
     }
 
     // Çalışma Modu
-    if (jsonDoc["opMode"].is<int>() && settings.operationMode != jsonDoc["opMode"].as<int>()) {
-        settings.operationMode = (GateOperationMode)jsonDoc["opMode"].as<int>();
-        logMessage("Setting updated: operationMode -> " + String(settings.operationMode), 0, settings.logLevel);
-        anyChangeDetected = true;
+    if (jsonDoc["opMode"].is<int>() && settings.operationMode != jsonDoc["opMode"].as<int>())
+    {
+      settings.operationMode = (GateOperationMode)jsonDoc["opMode"].as<int>();
+      logMessage("Setting updated: operationMode -> " + String(settings.operationMode), 0, settings.logLevel);
+      anyChangeDetected = true;
     }
-    
+
     // Güvenlik Modu
-    if (jsonDoc["authReq"].is<bool>() && settings.authorizationRequired != jsonDoc["authReq"].as<bool>()) {
-        settings.authorizationRequired = jsonDoc["authReq"];
-        logMessage("Setting updated: authorizationRequired -> " + String(settings.authorizationRequired), 0, settings.logLevel);
-        anyChangeDetected = true;
+    if (jsonDoc["authReq"].is<bool>() && settings.authorizationRequired != jsonDoc["authReq"].as<bool>())
+    {
+      settings.authorizationRequired = jsonDoc["authReq"];
+      logMessage("Setting updated: authorizationRequired -> " + String(settings.authorizationRequired), 0, settings.logLevel);
+      anyChangeDetected = true;
     }
 
     // PIN Kodu Değişikliği
     // Web paneli, sadece PIN değiştirilmek istendiğinde bu alanı gönderir.
     // Check if the "pinCode" key exists and is not null in the incoming JSON
-    if (!jsonDoc["pinCode"].isNull()) { // <-- This is the corrected line
-        String newPin = jsonDoc["pinCode"].as<String>();
-        if (settings.pinCode != newPin) {
-            settings.pinCode = newPin;
-            isAuthenticated = false; // PIN changed, require re-authentication for security
-            logMessage("Setting updated: PIN has been changed. Re-authentication required.", 0, settings.logLevel);
-            anyChangeDetected = true;
-        }
+    if (!jsonDoc["pinCode"].isNull())
+    { // <-- This is the corrected line
+      String newPin = jsonDoc["pinCode"].as<String>();
+      if (settings.pinCode != newPin)
+      {
+        settings.pinCode = newPin;
+        isAuthenticated = false; // PIN changed, require re-authentication for security
+        logMessage("Setting updated: PIN has been changed. Re-authentication required.", 0, settings.logLevel);
+        anyChangeDetected = true;
+      }
     }
 
     // 4. Eğer Herhangi Bir Değişiklik Varsa Kaydetmeyi Tetikle
-    if (anyChangeDetected) {
-        isSettingsChanged = true;
-        lastSettingsChangeTime = millis();
-        logMessage("Settings changed. Will be saved to NVRAM shortly.", 0, settings.logLevel);
-        // İsteğe bağlı: Web paneline ayarların güncellendiğine dair bir bildirim gönder
-        pStatusChar->setValue("SETTINGS_UPDATED");
-        pStatusChar->notify();
-    } else {
-        logMessage("Received settings are same as current. No changes made.", 1, settings.logLevel);
+    if (anyChangeDetected)
+    {
+      isSettingsChanged = true;
+      lastSettingsChangeTime = millis();
+      logMessage("Settings changed. Will be saved to NVRAM shortly.", 0, settings.logLevel);
+      // İsteğe bağlı: Web paneline ayarların güncellendiğine dair bir bildirim gönder
+      pStatusChar->setValue("SETTINGS_UPDATED");
+      pStatusChar->notify();
     }
-}
+    else
+    {
+      logMessage("Received settings are same as current. No changes made.", 1, settings.logLevel);
+    }
+  }
 };
 
 // gate.cpp -> setup() fonksiyonundan önce uygun bir yere ekleyin
 
 class PinAuthCharacteristicCallbacks : public BLECharacteristicCallbacks
 {
-  void onWrite(BLECharacteristic *pCharacteristic) {
+  void onWrite(BLECharacteristic *pCharacteristic)
+  {
     // Kilitli olup olmadığımızı kontrol etmeden önce en güncel durumu oku
-    loadSecurityState(); 
-    
+    loadSecurityState();
+
     // 1. ADIM: Cihaz kilitli mi?
-    if (millis() < securityState.pinLockoutEndTime) {
+    if (millis() < securityState.pinLockoutEndTime)
+    {
       long remainingSeconds = (securityState.pinLockoutEndTime - millis()) / 1000;
       logMessage("Device is locked. Try again in " + String(remainingSeconds) + " seconds.", 0, settings.logLevel);
       pStatusChar->setValue("AUTH_LOCKED");
@@ -1086,39 +1233,48 @@ class PinAuthCharacteristicCallbacks : public BLECharacteristicCallbacks
     }
 
     std::string value = pCharacteristic->getValue();
-    if (value.empty()) return;
+    if (value.empty())
+      return;
 
     // 2. ADIM: PIN doğru mu?
-    if (!settings.pinCode.isEmpty() && value == settings.pinCode.c_str()) {
+    if (!settings.pinCode.isEmpty() && value == settings.pinCode.c_str())
+    {
       // PIN DOĞRU
       logMessage("PIN auth successful!", 0, settings.logLevel);
       isAuthenticated = true;
-      
+
       // Hata sayacını ve kilidi sıfırla, sonra durumu KALICI OLARAK KAYDET
       securityState.pinFailedAttempts = 0;
       securityState.pinLockoutEndTime = 0;
-      saveSecurityState(); 
-      
+      saveSecurityState();
+
       pStatusChar->setValue("AUTH_SUCCESS");
       pStatusChar->notify();
-    } else {
+    }
+    else
+    {
       // PIN YANLIŞ
       isAuthenticated = false;
       securityState.pinFailedAttempts++;
       logMessage("PIN auth FAILED! Attempt " + String(securityState.pinFailedAttempts), 0, settings.logLevel);
-      
+
       // 3. ADIM: Kademeli kilitlemeyi uygula
-      if (securityState.pinFailedAttempts >= 10) {
+      if (securityState.pinFailedAttempts >= 10)
+      {
         securityState.pinLockoutEndTime = millis() + 900000; // 15 dakika
-      } else if (securityState.pinFailedAttempts >= 5) {
-        securityState.pinLockoutEndTime = millis() + 60000;  // 1 dakika
-      } else if (securityState.pinFailedAttempts >= 3) {
+      }
+      else if (securityState.pinFailedAttempts >= 5)
+      {
+        securityState.pinLockoutEndTime = millis() + 60000; // 1 dakika
+      }
+      else if (securityState.pinFailedAttempts >= 3)
+      {
         securityState.pinLockoutEndTime = millis() + 10000; // 10 saniye
       }
-      
+
       // Yeni hata durumunu KALICI OLARAK KAYDET
-      saveSecurityState(); 
-      
+      saveSecurityState();
+
       pStatusChar->setValue("AUTH_FAILED");
       pStatusChar->notify();
     }
@@ -1140,7 +1296,10 @@ class PinAuthCharacteristicCallbacks : public BLECharacteristicCallbacks
 void setup()
 {
   Serial.begin(115200);
+  Serial.println();
+
   logMessage("Gate Control System Starting...", 0, settings.logLevel);
+  logMessage("Version: " + getFirmwareVersion(), 0, settings.logLevel);
 
   // Pinleri ayarla
   pinMode(INTERNAL_LED_PIN, OUTPUT);
@@ -1176,7 +1335,7 @@ void setup()
   loadRegisteredDevices();
   printRegisteredDevices();
 
-  loadSecurityState(); 
+  loadSecurityState();
 
   // LED kuyruğunu oluştur
   ledQueue = xQueueCreate(10, sizeof(LedPattern));
@@ -1312,6 +1471,27 @@ void sendBeaconBroadcast()
   esp_now_send(broadcastAddress, (const uint8_t *)output.c_str(), output.length());
 }
 
+void sendDiscoveryProbe()
+{
+  JsonDocument doc;
+  doc["msgType"] = "DISCOVERY_PROBE";
+
+  String output;
+  serializeJson(doc, output);
+
+  // Mesajı tüm cihazların duyabilmesi için broadcast adresiyle gönder
+  esp_err_t result = esp_now_send(broadcastAddress, (const uint8_t *)output.c_str(), output.length());
+
+  if (result != ESP_OK)
+  {
+    logMessage("Error sending DISCOVERY_PROBE broadcast. Code: " + String(result), 0, settings.logLevel);
+  }
+  else
+  {
+    logMessage("Sent DISCOVERY_PROBE.", 1, settings.logLevel); // Sadece detaylı loglamada göster
+  }
+}
+
 void loop()
 {
   unsigned long currentTime = millis();
@@ -1434,10 +1614,28 @@ void loop()
     }
     break;
 
+  case AUTH_DISCOVERY_SCAN:
+    // Keşif modundaysak ve 10 saniye geçtiyse zaman aşımına uğrat
+    if (millis() - discoveryScanStartTime > 10000)
+    {
+      logMessage("Discovery scan timed out. No devices found.", 0, settings.logLevel);
+      currentAuthMode = AUTH_IDLE;
+      // Opsiyonel: Panele "cihaz bulunamadı" bildirimi gönderilebilir.
+      pStatusChar->setValue("{\"event\":\"scan_failed\"}");
+      pStatusChar->notify();
+    }
+    // Her saniye keşif yayınını tekrarla
+    else if (millis() - lastScanBroadcastTime >= 1000)
+    {
+      sendDiscoveryProbe();
+      lastScanBroadcastTime = millis();
+    }
+    break;
+
   case AUTH_IDLE:
     // Boşta modundaysak...
 
-    if (!registeredDevices.empty())
+    if (!registeredDevices.empty() && settings.operationMode != MODE_DISABLED)
     {
       if (currentTime - lastBeaconTime > BEACON_INTERVAL_MS)
       {
