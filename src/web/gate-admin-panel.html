@@ -387,9 +387,9 @@
                 </div>
                 <div class="input-group">
 
-                    <label for="newPinInput">PIN (Kaldırmak içinboş bırakın)</label>
+                    <label for="newPinInput">PIN <span id="pinRemoveHint" style="font-size:12px; color:#888;"></span></label>
                     <input type="text" id="newPinInput" maxlength="4" pattern="\d{0,4}" inputmode="numeric"
-                        placeholder="Yeni PIN'i sadece değiştirecekseniz girin" />
+                        placeholder="Yeni PIN (4 hane)" />
                     <span id="pinStatus" style="font-size: 12px; margin-top: 5px; display: block;"></span>
                 </div>
 
@@ -791,11 +791,15 @@
                 if (settings.pinExists) {
                     ui.newPinInput.value = "****"; // Mevcut PIN'i gösterme, sadece maskele
                     ui.newPinInput.placeholder = "Değiştirmek için yeni PIN girin";
+                    document.getElementById('pinRemoveHint').textContent = "(Kaldırmak için boş bırakın)";
+
                     ui.pinStatus.innerText = "Cihaz PIN ile korunuyor.";
                     ui.pinStatus.style.color = "#007AFF";
                 } else {
                     ui.newPinInput.value = "";
                     ui.newPinInput.placeholder = "Yeni PIN (4 hane)";
+                    document.getElementById('pinRemoveHint').textContent = "";
+
                     ui.pinStatus.innerText = "⚠️ PIN ayarlı değil! Herkes ayarlara erişebilir.";
                     ui.pinStatus.style.color = "#D32F2F"; // Dikkat çekici kırmızı renk
                 }
