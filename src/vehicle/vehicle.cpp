@@ -177,6 +177,13 @@ String getDeviceNameFromMac(String mac)
 
 void printSettingsToSerial()
 {
+
+  logMessage("--- Device Settings ---", 0, settings.logLevel);
+  logMessage("Vehicle Name: " + String(settings.deviceName), 0, settings.logLevel);
+  logMessage("Version: " + getFirmwareVersion(), 0, settings.logLevel);
+
+  
+
   JsonDocument jsonDoc;
   jsonDoc["warnDuration"] = settings.warnDuration;
   jsonDoc["deviceName"] = settings.deviceName;
@@ -663,14 +670,21 @@ void OnDataRecv(const uint8_t *mac_addr, const uint8_t *incomingData, int len)
     logMessage("Discovery probe received. Responding...", 1, settings.logLevel);
 
     // Cevap göndereceğimiz Gate'i geçici olarak peer listesine ekle
-    esp_now_peer_info_t peerInfo = {};
-    memcpy(peerInfo.peer_addr, mac_addr, 6);
-    peerInfo.channel = FIXED_WIFI_CHANNEL;
-    peerInfo.encrypt = false;
-    memcpy(peerInfo.lmk, PMK, 16);
-    if (!esp_now_is_peer_exist(mac_addr))
-    {
-      esp_now_add_peer(&peerInfo);
+    // Check if peer already exists before adding
+    if (!esp_now_is_peer_exist(mac_addr)) {
+        esp_now_peer_info_t peerInfo = {};
+        memcpy(peerInfo.peer_addr, mac_addr, 6);
+        peerInfo.channel = FIXED_WIFI_CHANNEL;
+        peerInfo.encrypt = false; // No encryption for initial probe/response
+        // No lmk needed for unencrypted communication, but if needed for later,
+        // it would be PMK at this stage for further handshakes.
+        // memcpy(peerInfo.lmk, PMK, 16);
+        if (esp_now_add_peer(&peerInfo) != ESP_OK)
+        {
+            logMessage("Failed to add Gate as a temporary peer for DISCOVERY_PROBE response.", 0, settings.logLevel);
+            // Even if adding peer fails, we can still try to send the response
+            // if the peer was somehow already present.
+        }
     }
 
     // Cevap mesajını oluştur
@@ -696,16 +710,23 @@ void OnDataRecv(const uint8_t *mac_addr, const uint8_t *incomingData, int len)
     logMessage("SCAN_REQUEST recieved! Replying with AUTH_ACK...", 0, settings.logLevel);
 
     // Cevap gönderilecek Gate'i geçici olarak peer listesine ekle
-    esp_now_peer_info_t peerInfo = {};
-    memcpy(peerInfo.peer_addr, mac_addr, 6);
-    peerInfo.channel = FIXED_WIFI_CHANNEL;
-    peerInfo.encrypt = false;
-
+    // **ÖNEMLİ:** Burada encrypt: false ve lmk: PMK olarak ayarlanmalı
+    // çünkü AUTH_ACK mesajı henüz anahtar alışverişi olmadığı için PMK ile şifrelenmeyecek.
+    // Ancak, gelecekteki KEY_DELIVERY mesajları PMK ile şifrelendiğinden,
+    // burada PMK'yı peer olarak eklemeliyiz.
     if (!esp_now_is_peer_exist(mac_addr))
     {
+      esp_now_peer_info_t peerInfo = {};
+      memcpy(peerInfo.peer_addr, mac_addr, 6);
+      peerInfo.channel = FIXED_WIFI_CHANNEL;
+      peerInfo.encrypt = false; // AUTH_ACK kendisi şifresiz gönderilir
+      // PMK'yı peer'a atıyoruz, çünkü Gate'den gelecek KEY_DELIVERY mesajı PMK ile şifreli olacak.
+      // Bu sayede o mesajı ESP-NOW otomatik olarak çözebilecek.
+      memcpy(peerInfo.lmk, PMK, 16);
+
       if (esp_now_add_peer(&peerInfo) != ESP_OK)
       {
-        logMessage("Failed to add Gate as a peer.", 0, settings.logLevel);
+        logMessage("Failed to add Gate as a peer for AUTH_ACK.", 0, settings.logLevel);
         return;
       }
     }
@@ -723,18 +744,10 @@ void OnDataRecv(const uint8_t *mac_addr, const uint8_t *incomingData, int len)
   else if (strcmp(msgType, "KEY_DELIVERY") == 0)
   {
 
-    // 1. Gönderen Gate'i peer olarak ekle
-    esp_now_peer_info_t peerInfo = {};
-    memcpy(peerInfo.peer_addr, mac_addr, 6);
-    peerInfo.channel = FIXED_WIFI_CHANNEL;
-    peerInfo.encrypt = false;
-    memcpy(peerInfo.lmk, PMK, 16); // PSK paylaşımı
+    // Bu noktada Gate'den gelen KEY_DELIVERY mesajı zaten PMK ile şifrelenmiş olmalı
+    // ve ESP-NOW tarafından otomatik olarak çözülmüş olmalı çünkü SCAN_REQUEST sırasında
+    // Gate'in MAC'ini PMK ile peer olarak ekledik.
 
-    if (esp_now_add_peer(&peerInfo) != ESP_OK)
-    {
-      logMessage("Failed to add Gate as peer for KEY_ACK", 0, settings.logLevel);
-      return;
-    }
 
     const char *encryptedKey = doc["key"];
     if (encryptedKey)
@@ -760,16 +773,26 @@ void OnDataRecv(const uint8_t *mac_addr, const uint8_t *incomingData, int len)
       char ackBuffer[32];
       serializeJson(keyAckDoc, ackBuffer);
 
+      // KEY_ACK'i göndermek için Gate'i tekrar peer olarak eklemeye gerek yok
+      // çünkü AUTH_ACK sırasında eklenmişti ve ESP-NOW onu otomatik olarak kullanacak.
+      // Eğer bu peer yoksa, burada bir sorun var demektir.
+      // Ancak `esp_now_add_peer` tekrar çağrılırsa ve zaten varsa ESP_ERR_ESPNOW_EXIST döner.
+      // Bunu handle etmeliyiz.
+
+      // Check if peer exists before trying to send
+      if (esp_now_is_peer_exist(mac_addr))
+      {
+          esp_now_send(mac_addr, (const uint8_t *)ackBuffer, strlen(ackBuffer));
+          logMessage("Stored new key for " + gateMac + ". Sent KEY_ACK.", 0, settings.logLevel);
+
+          // Eşleşme tamamlandı, tarama modundan çık ve başarı LED'ini yak
+          currentVehicleState = VEHICLE_IDLE;
+          LedPattern p_success = {10000, 1}; // 10 saniye boyunca yanık kal
+          xQueueSend(ledQueue, &p_success, 0);
+      } else {
+          logMessage("Peer for " + gateMac + " not found when trying to send KEY_ACK. Pairing might fail.", 0, settings.logLevel);
+      }
       
-      esp_now_send(mac_addr, (const uint8_t *)ackBuffer, strlen(ackBuffer));
-      esp_now_del_peer(mac_addr);
-
-      logMessage("Stored new key for " + gateMac + ". Sent KEY_ACK.", 0, settings.logLevel);
-
-      // Eşleşme tamamlandı, tarama modundan çık ve başarı LED'ini yak
-      currentVehicleState = VEHICLE_IDLE;
-      LedPattern p_success = {10000, 1}; // 10 saniye boyunca yanık kal
-      xQueueSend(ledQueue, &p_success, 0);
     }
     else
     {
@@ -780,7 +803,13 @@ void OnDataRecv(const uint8_t *mac_addr, const uint8_t *incomingData, int len)
       keyAckDoc["msgType"] = "KEY_ACK";
       char ackBuffer[32];
       serializeJson(keyAckDoc, ackBuffer);
-      esp_now_send(mac_addr, (const uint8_t *)ackBuffer, strlen(ackBuffer));
+
+
+      // Sadece var olan peer'e tekrar gönder
+      if (esp_now_is_peer_exist(mac_addr))
+      {
+          esp_now_send(mac_addr, (const uint8_t *)ackBuffer, strlen(ackBuffer));
+      }
     }
   }
   // --- 3. NORMAL ÇALIŞMA: Beacon'ları Dinleyip Otomatik Komut Gönderme ---
@@ -857,7 +886,7 @@ void setup()
   Serial.println();
 
   logMessage("Vehicle Control System Starting...", 0, settings.logLevel);
-  logMessage("Version: " + getFirmwareVersion(), 0, settings.logLevel);
+  
 
   pinMode(INTERNAL_LED_PIN, OUTPUT);
   digitalWrite(INTERNAL_LED_PIN, LED_OFF);

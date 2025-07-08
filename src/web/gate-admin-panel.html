@@ -523,60 +523,63 @@
 
                 switch (data.event) {
 
-                     case 'device_found':
-                // Mevcut cihaz listesini al
-                deviceMgmtCharacteristic.readValue()
-                    .then(value => {
-                        const devices = JSON.parse(new TextDecoder().decode(value));
-                        const existingDevice = devices.find(device => device.mac === data.mac);
-                        const isPaired = !!existingDevice;
+                    case 'device_found':
 
-                        // Modal başlık ve buton metnini ayarla
-                        const modalTitle = document.getElementById('modalTitle');
-                        const pairButton = document.getElementById('pairButton');
-                        
-                        if (isPaired) {
-                            modalTitle.innerText = "Kayıtlı Araç Bulundu";
-                            pairButton.innerText = "Güncelle";
-                        } else {
-                            modalTitle.innerText = "Yeni Araç Bulundu";
-                            pairButton.innerText = "Ekle ve Eşleştir";
-                        }
+                        finishScanUI(true); 
 
-                        // Modal içeriğini doldur
-                        document.getElementById('foundDeviceName').innerText = data.deviceName || "Bilinmiyor";
-                        document.getElementById('foundDeviceMac').innerText = data.mac;
-                        
-                        // Nickname ayarla - kayıtlı araçta varsa onu göster, yoksa/yeni araçsa deviceName göster
-                        const nicknameInput = document.getElementById('nicknameInput');
-                        if (isPaired && existingDevice.nickname) {
-                            nicknameInput.value = existingDevice.nickname;
-                        } else {
-                            nicknameInput.value = data.deviceName || "";
-                        }
+                        // Mevcut cihaz listesini al
+                        deviceMgmtCharacteristic.readValue()
+                            .then(value => {
+                                const devices = JSON.parse(new TextDecoder().decode(value));
+                                const existingDevice = devices.find(device => device.mac === data.mac);
+                                const isPaired = !!existingDevice;
 
-                        // Buton click eventini ayarla
-                        pairButton.onclick = () => {
-                            const payload = {
-                                action: isPaired ? "update_nickname" : "pair_new_device",
-                                mac: data.mac,
-                                vehicleName: data.deviceName,
-                                nickname: nicknameInput.value
-                            };
-                            writeToDeviceMgmtChar(payload);
+                                // Modal başlık ve buton metnini ayarla
+                                const modalTitle = document.getElementById('modalTitle');
+                                const pairButton = document.getElementById('pairButton');
 
-                            const actionText = isPaired ? "Güncelleme" : "Eşleştirme";
-                            showToast(`${actionText} süreci başlatıldı...`, "info");
-                            closeModal();
-                        };
+                                if (isPaired) {
+                                    modalTitle.innerText = "Kayıtlı Araç Bulundu";
+                                    pairButton.innerText = "Güncelle";
+                                } else {
+                                    modalTitle.innerText = "Yeni Araç Bulundu";
+                                    pairButton.innerText = "Ekle ve Eşleştir";
+                                }
 
-                        ui.foundDeviceModal.style.display = 'flex';
-                    })
-                    .catch(error => {
-                        console.error("Cihaz listesi okunamadı:", error);
-                        showToast("Cihaz durumu kontrol edilemedi", "error");
-                    });
-                break;
+                                // Modal içeriğini doldur
+                                document.getElementById('foundDeviceName').innerText = data.deviceName || "Bilinmiyor";
+                                document.getElementById('foundDeviceMac').innerText = data.mac;
+
+                                // Nickname ayarla - kayıtlı araçta varsa onu göster, yoksa/yeni araçsa deviceName göster
+                                const nicknameInput = document.getElementById('nicknameInput');
+                                if (isPaired && existingDevice.nickname) {
+                                    nicknameInput.value = existingDevice.nickname;
+                                } else {
+                                    nicknameInput.value = data.deviceName || "";
+                                }
+
+                                // Buton click eventini ayarla
+                                pairButton.onclick = () => {
+                                    const payload = {
+                                        action: isPaired ? "update_nickname" : "pair_new_device",
+                                        mac: data.mac,
+                                        vehicleName: data.deviceName,
+                                        nickname: nicknameInput.value
+                                    };
+                                    writeToDeviceMgmtChar(payload);
+
+                                    const actionText = isPaired ? "Güncelleme" : "Eşleştirme";
+                                    showToast(`${actionText} süreci başlatıldı...`, "info");
+                                    closeModal();
+                                };
+
+                                ui.foundDeviceModal.style.display = 'flex';
+                            })
+                            .catch(error => {
+                                console.error("Cihaz listesi okunamadı:", error);
+                                showToast("Cihaz durumu kontrol edilemedi", "error");
+                            });
+                        break;
 
                     case 'scan_failed':
                         // Tarama başarısız oldu olayı
@@ -693,15 +696,28 @@
             writeToDeviceMgmtChar(payload);
 
             // 10 saniye sonra animasyonu ve buton durumunu sıfırla
-            setTimeout(finishScanUI, 10000);
+            scanTimeoutId = setTimeout(() => { // Zamanlayıcıyı bir ID'ye ata
+                finishScanUI(false); // Zaman aşımında toast göster
+                showToast("Tarama zaman aşımına uğradı, yeni cihaz bulunamadı.", "error"); //
+            }, 10000);
         }
 
-        function finishScanUI() {
+        function finishScanUI(suppressToast = false) { // suppressToast parametresi eklendi
             document.body.classList.remove('scanning');
             ui.scanButton.innerText = "Yakındaki Araçları Tara";
             ui.scanButton.disabled = false;
             ui.scanProgressContainer.style.display = 'none';
-            showToast("Tarama tamamlandı.", "success");
+            
+            // Eğer toast gösterilmemesi istenmiyorsa
+            if (!suppressToast) { //
+                showToast("Tarama tamamlandı.", "success"); //
+            }
+
+            // Zamanlayıcıyı temizle
+            if (scanTimeoutId) { //
+                clearTimeout(scanTimeoutId); //
+                scanTimeoutId = null; //
+            }
         }
 
         async function showMainContentAndLoadData() {

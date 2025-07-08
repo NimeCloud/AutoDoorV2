@@ -99,6 +99,9 @@ struct DeviceSettings
   bool authorizationRequired; // Yetkilendirme gerekliliği
   GateOperationMode operationMode;
   String pinCode;
+  String versionMajor;
+  String versionMinor;
+  String versionBuild;
 };
 
 // Global Değişkenler
@@ -200,6 +203,7 @@ void printSettingsToSerial()
 {
   logMessage("--- Device Settings ---", 0, settings.logLevel);
   logMessage("Device Name: " + String(settings.deviceName), 0, settings.logLevel);
+  logMessage("Version: " + getFirmwareVersion(), 0, settings.logLevel);
 
   // operationMode enum'unu okunabilir bir metne çevir
   String opModeStr;
@@ -596,6 +600,8 @@ void updateLights()
 
 // ========================= Görevler (Tasks) =========================
 
+// gate.cpp
+
 void ledTask(void *pvParameters)
 {
   LedPattern currentPattern;
@@ -622,12 +628,22 @@ void ledTask(void *pvParameters)
       {
         digitalWrite(INTERNAL_LED_PIN, LED_ON);
         vTaskDelay(pdMS_TO_TICKS(currentPattern.duration));
-        digitalWrite(INTERNAL_LED_PIN, LED_OFF);
+
+        // Eğer bu tekli bir "uzun yanma" deseni DEĞİLSE veya son flaş ise LED'i kapat
+        // currentPattern.count > 1 ise normal flaş dizisidir, her flaş sonrası kapat.
+        // currentPattern.count == 1 ise tek bir "uzun yanma"dır, bu durumda döngünün sonunda kapatılır.
+        if (currentPattern.count > 1 || i == currentPattern.count - 1) {
+            digitalWrite(INTERNAL_LED_PIN, LED_OFF);
+        }
+
         if (i < currentPattern.count - 1)
         {
           vTaskDelay(pdMS_TO_TICKS(currentPattern.duration));
         }
       }
+      // Özellikle tekli uzun yanmalarda, for döngüsünden çıktıktan sonra LED'in kapandığından emin olun.
+      // Yukarıdaki if bloğu bunu zaten sağlamalı, ancak bir güvenlik katmanı olarak düşünülebilir.
+      // digitalWrite(INTERNAL_LED_PIN, LED_OFF); // Bu satır genellikle gerekmez, çünkü for döngüsü yönetmeli.
     }
     else
     {
@@ -646,7 +662,6 @@ void ledTask(void *pvParameters)
   }
 }
 
-// gate.cpp -> Mevcut stateMachineTask fonksiyonunu silip bunu yapıştırın
 
 void stateMachineTask(void *pvParameters)
 {
@@ -880,7 +895,7 @@ void OnDataRecv(const uint8_t *mac_addr, const uint8_t *incomingData, int len)
       if (isMacRegistered(foundVehicleMac))
       {
         logMessage("Found vehicle is already registered: " + foundVehicleMac + " (" + foundVehicleName + ")", 0, settings.logLevel);
-        //return; // Zaten kayıtlıysa, başka bir şey yapma
+        // return; // Zaten kayıtlıysa, başka bir şey yapma
       }
 
       logMessage("First vehicle found: " + foundVehicleMac + " (" + foundVehicleName + ")", 0, settings.logLevel);
@@ -1299,7 +1314,7 @@ void setup()
   Serial.println();
 
   logMessage("Gate Control System Starting...", 0, settings.logLevel);
-  logMessage("Version: " + getFirmwareVersion(), 0, settings.logLevel);
+  
 
   // Pinleri ayarla
   pinMode(INTERNAL_LED_PIN, OUTPUT);
