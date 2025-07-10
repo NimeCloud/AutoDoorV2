@@ -1240,13 +1240,15 @@
                 await otaDataCharacteristic.writeValueWithoutResponse(packet);
                 chunksSentInWindow++;
 
-                await new Promise(resolve => setTimeout(resolve, 5)); // Stabilite için eklendi
+                // Stabilite için bu gecikme kritik öneme sahiptir.
+                await new Promise(resolve => setTimeout(resolve, 5));
 
                 if (chunksSentInWindow >= windowSize || i === totalChunks - 1) {
                     console.log(`Window sent (${chunksSentInWindow} chunks). Waiting for ACK...`);
                     const ackPromise = new Promise(resolve => { otaAckPromiseResolver = resolve; });
                     const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("OTA ACK Timeout")), 10000));
 
+                    // Hatalı olan yinelenen satır burada kaldırıldı.
                     await Promise.race([ackPromise, timeoutPromise]);
 
                     if (otaShouldResend) {
@@ -1267,6 +1269,7 @@
             const endCommand = { command: "end" };
             await otaControlCharacteristic.writeValue(new TextEncoder().encode(JSON.stringify(endCommand)));
         }
+
 
 
 

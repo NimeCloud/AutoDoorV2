@@ -9,7 +9,7 @@ REM --- KULLANICI AYARI: LÜTFEN BU YOLU KENDİ BİLGİSAYARINIZA GÖRE DÜZENLE
 REM
 REM Bu, build numarasının tutuldugu .txt dosyasinin tam yoludur.
 REM Private projenizin olduğu yerdeki version_number.txt dosyasını göstermeli.
-set "BUILD_NUM_FILE_PATH=E:\_CODE_\AutoDoorV2\build_number.txt"
+set "BUILD_NUM_FILE_PATH=E:\_CODE_\AutoDoorV2\version_build.txt"
 REM ---------------------------------------------------------------------------
 
 

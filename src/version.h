@@ -1,5 +1,5 @@
 #pragma once
-// Otomatik oluþturuldu
+// Otomatik oluþturuldu - DO NOT EDIT
 #define FW_VERSION_MAJOR 1
-#define FW_VERSION_MINOR 0
-#define FW_VERSION_BUILD 96
+#define FW_VERSION_MINOR 1
+#define FW_VERSION_BUILD 112
