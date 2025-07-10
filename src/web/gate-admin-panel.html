@@ -52,10 +52,31 @@
             margin-bottom: 10px;
         }
 
+        button:disabled {
+            background-color: #a0cffc;
+            cursor: not-allowed;
+        }
+
         button:hover,
         select:hover {
             background-color: #005ecb;
             /* Diğer panel ile tutarlı mavi tonu */
+        }
+
+        button.btn-secondary {
+            background-color: #5a6268;
+        }
+
+        button.btn-secondary:hover {
+            background-color: #4a4f54;
+        }
+
+        button.btn-success {
+            background-color: #28a745;
+        }
+
+        button.btn-success:hover {
+            background-color: #218838;
         }
 
         .tabs {
@@ -74,7 +95,7 @@
             border-bottom: 3px solid transparent;
             transition: all 0.2s ease;
             color: #8e8e93;
-            /* <-- YENİ EKLENEN SATIR: Pasif sekme rengi (standart bir gri) */
+
 
         }
 
@@ -110,6 +131,44 @@
             font-size: 16px;
         }
 
+        #otaProgressBar {
+
+            min-width: 40px;
+
+
+            background-color: #4CAF50;
+            color: white;
+
+            line-height: 20px;
+            /* veya progress bar'ınızın yüksekliği neyse */
+            width: 0%;
+            border-radius: 5px;
+            font-size: small;
+            padding-left: 5px;
+            /* İhtiyacınıza göre bu değeri ayarlayabilirsiniz */
+        }
+
+        #otaUpdateContainer .progress-container {
+            width: 100%;
+            height: 20px;
+            background-color: #e9ecef;
+            border-radius: 10px;
+            overflow: hidden;
+            margin-top: 10px;
+        }
+
+        #otaUpdateContainer .progress-bar {
+            height: 100%;
+            width: 0%;
+            background-color: #007AFF;
+            border-radius: 10px;
+            transition: width 0.2s linear;
+            text-align: center;
+            color: white;
+            font-size: 12px;
+            line-height: 20px;
+        }
+
         .slider-wrapper .value {
             font-weight: bold;
             color: #007AFF;
@@ -120,6 +179,12 @@
             font-weight: 600;
             margin-bottom: 20px;
             color: #1c1c1e;
+        }
+
+        hr {
+            border: none;
+            border-top: 1px solid #e0e0e0;
+            margin: 25px 0;
         }
 
         .toast {
@@ -422,6 +487,28 @@
                     <input type="range" id="preCloseWarningSlider" min="1" max="15" step="1">
                 </div>
                 <button id="saveSettingsButton">Ayarları Kaydet</button>
+
+                <hr>
+                <h3>Firmware & Güncelleme</h3>
+                <div class="input-group">
+                    <label>Mevcut Firmware Versiyonu:</label>
+                    <p id="firmwareVersionDisplay" style="font-weight:bold;">Bilinmiyor</p>
+                </div>
+                <div class="input-group">
+                    <label for="updateUrlInput">Update URL:</label>
+                    <input type="url" id="updateUrlInput"
+                        value="https://raw.githubusercontent.com/NimeCloud/GateControlFirmware/main/version.json">
+                </div>
+
+                <div id="otaUpdateContainer">
+                    <button id="checkUpdateButton" class="btn-secondary">Güncellemeleri Kontrol Et</button>
+                    <button id="startUpdateButton" class="btn-success" style="display:none;">Yeni Versiyonu İndir ve
+                        Yükle</button>
+                    <div class="progress-container" style="display: none;">
+                        <div id="otaProgressBar" class="progress-bar">0%</div>
+                    </div>
+                </div>
+
             </div>
 
             <button id="disconnectButton" style="background-color:#6c757d; margin-top: 20px;">Bağlantıyı Kes</button>
@@ -436,12 +523,27 @@
         const CHAR_PIN_AUTH_UUID = "b2c3d4e5-6789-4f0b-c1d2-a3b4c5d6e7f8";
         const CHAR_DEVICE_MGMT_UUID = "d4e5f6a7-8901-4b2d-c3e4-f5a6b7c8d9e0";
         const CHAR_STATUS_UUID = "c3d4e5f6-7890-4a1c-b2d3-e4f5a6b7c8d9";
+        // --- YENİ OTA KARAKTERİSTİKLERİ ---
+        const CHAR_OTA_CONTROL_UUID = "f0b1c2d3-e4f5-a6b7-c8d9-e0f1a2b3c4d5";
+        const CHAR_OTA_DATA_UUID = "1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d";
 
         // Global variables
         let bleDevice, settingsCharacteristic, pinAuthCharacteristic, deviceMgmtCharacteristic, statusCharacteristic;
         let toastTimeout;
         let isPinInputModified = false;
-        let deviceHasPin = false; // <<< YENİ SATIR
+        let deviceHasPin = false;
+        let newFirmwareVersion = null;
+        let firmwareBinUrl = null;
+
+        let otaAckReceived = null;
+        let otaAckPromiseResolver = null;
+
+        let otaWindowSize = 20; // Varsayılan değer
+        let otaChunkSize = 500;  // Varsayılan değer
+        let otaShouldResend = false;
+        let otaReadyPromiseResolver = null;
+
+
 
 
 
@@ -473,7 +575,17 @@
             scanButton: document.getElementById('scanButton'),
             scanProgressBar: document.getElementById('scanProgressBar'),
             scanProgressContainer: document.getElementById('scanProgressContainer'),
-            foundDeviceModal: document.getElementById('foundDeviceModal')
+            foundDeviceModal: document.getElementById('foundDeviceModal'),
+
+            // --- OTA UI ---
+            updateUrlInput: document.getElementById('updateUrlInput'),
+            firmwareVersionDisplay: document.getElementById('firmwareVersionDisplay'),
+            checkUpdateButton: document.getElementById('checkUpdateButton'),
+            startUpdateButton: document.getElementById('startUpdateButton'),
+            otaUpdateContainer: document.getElementById('otaUpdateContainer'),
+            otaProgressBar: document.getElementById('otaProgressBar'),
+            otaProgressContainer: document.querySelector('#otaUpdateContainer .progress-container')
+
 
         };
 
@@ -490,6 +602,10 @@
 
         ui.scanButton.addEventListener('click', startVehicleScan);
 
+        ui.checkUpdateButton.addEventListener('click', checkVersion);
+        ui.startUpdateButton.addEventListener('click', startFirmwareUpdate);
+
+
 
         // --- Core Functions ---
 
@@ -501,7 +617,20 @@
             showToast("Tarama başlatılıyor...", "info");
             await writeToDeviceMgmtChar({ action: "start_discovery_scan" });
         }
+        // Versiyonları karşılaştıran yardımcı fonksiyon (ör: "1.0.53" vs "1.0.55")
+        function compareVersions(v1, v2) {
+            const parts1 = v1.split('.').map(Number);
+            const parts2 = v2.split('.').map(Number);
 
+            for (let i = 0; i < Math.max(parts1.length, parts2.length); i++) {
+                const p1 = parts1[i] || 0; // Eğer parça yoksa 0 kabul et
+                const p2 = parts2[i] || 0;
+
+                if (p1 > p2) return 1; // v1 daha yeni
+                if (p1 < p2) return -1; // v2 daha yeni
+            }
+            return 0; // Versiyonlar aynı
+        }
 
         function handleStatusNotifications(event) {
             const rawData = new TextDecoder().decode(event.target.value);
@@ -510,6 +639,8 @@
             // Gelen verinin JSON olup olmadığını anlamak için ayrıştırmayı dene
             try {
                 data = JSON.parse(rawData);
+                console.log("BLE Notification Received:", data); // Gelen her JSON bildirimini konsola yazdır
+
             } catch (e) {
                 // Eğer JSON değilse, bu "AUTH_SUCCESS" gibi basit bir metin mesajıdır.
                 // Bu panelde PIN yönetimi olmadığı için şimdilik sadece loglayabiliriz.
@@ -523,9 +654,58 @@
 
                 switch (data.event) {
 
+
+                    case 'ota_status':
+                        showToast(data.message, data.type || 'info');
+                        if (data.status === 'ready') {
+                            // Device is ready, start sending firmware
+                            sendFirmwareFile(data.firmwareBinary);
+                        } else if (data.status === 'failed' || data.status === 'success') {
+                            resetOtaUi();
+                        }
+                        if (data.reboot) {
+                            setTimeout(() => onDisconnected(false), 2000);
+                        }
+                        break;
+
+                    case 'ota_ready':
+                        if (otaReadyPromiseResolver) {
+                            otaReadyPromiseResolver(data.progress); // Mevcut ilerlemeyi ilet
+                        }
+                        break;
+
+                    case 'ota_progress':
+                        //const percent = Math.round((data.received / data.total) * 100);
+                        const percent = data.progress;
+                        ui.otaProgressBar.style.width = `${percent}%`;
+                        ui.otaProgressBar.textContent = `${percent}%`;
+                        break;
+
+                    case 'ota_ack':
+                        if (otaAckPromiseResolver) {
+                            otaAckPromiseResolver(); // Bekleyen Promise'i çözerek gönderimin devam etmesini sağla
+                            otaAckPromiseResolver = null; // Bir sonraki pencere için temizle
+                        }
+                        break;
+
+
+                    case 'ota_nack':
+                        showToast("Veri hatası! Paketler tekrar gönderiliyor...", "error");
+                        otaShouldResend = true;
+                        if (otaAckPromiseResolver) {
+                            otaAckPromiseResolver(); // Hata olsa bile bekleyen döngüyü devam ettir
+                        }
+                        break;
+
+                    case 'ota_config':
+                        otaWindowSize = data.windowSize;
+                        otaChunkSize = data.chunkSize;
+                        console.log(`OTA configuration set by device: otaWindowSize=${otaWindowSize} otaChunkSize=${otaChunkSize}`);
+                        break;
+
                     case 'device_found':
 
-                        finishScanUI(true); 
+                        finishScanUI(true);
 
                         // Mevcut cihaz listesini al
                         deviceMgmtCharacteristic.readValue()
@@ -636,6 +816,10 @@
                 // 1. Durum (Status) Karakteristiğine Eriş
                 statusCharacteristic = await service.getCharacteristic(CHAR_STATUS_UUID);
 
+                otaControlCharacteristic = await service.getCharacteristic(CHAR_OTA_CONTROL_UUID);
+                otaDataCharacteristic = await service.getCharacteristic(CHAR_OTA_DATA_UUID);
+
+
                 // 2. Bu karakteristikten gelecek bildirimleri dinlemeye başla
                 await statusCharacteristic.startNotifications();
                 statusCharacteristic.addEventListener('characteristicvaluechanged', handleStatusNotifications);
@@ -676,6 +860,9 @@
 
 
         function startVehicleScan() {
+
+
+
             // Eğer zaten tarama yapılıyorsa, tekrar başlatma
             if (document.body.classList.contains('scanning')) return;
 
@@ -707,7 +894,7 @@
             ui.scanButton.innerText = "Yakındaki Araçları Tara";
             ui.scanButton.disabled = false;
             ui.scanProgressContainer.style.display = 'none';
-            
+
             // Eğer toast gösterilmemesi istenmiyorsa
             if (!suppressToast) { //
                 showToast("Tarama tamamlandı.", "success"); //
@@ -809,6 +996,8 @@
                 ui.preCloseWarningValue.innerText = settings.preCloseWarning || 5;
                 ui.operationModeSelect.value = settings.opMode || 0;
                 ui.authRequiredCheckbox.checked = settings.authReq !== false;
+                ui.firmwareVersionDisplay.textContent = settings.firmwareVersion || 'Bilinmiyor';
+
 
                 // Ayarlar okunduktan sonra uyarının ilk durumunu ayarla
                 updateSecurityWarning(); // <<< YENİ SATIR
@@ -902,6 +1091,185 @@
             }
         }
 
+
+        // --- NEW OTA FUNCTIONS ---
+
+        function resetOtaUi() {
+            isUpdateInProgress = false;
+            ui.startUpdateButton.style.display = 'none';
+            ui.checkUpdateButton.style.display = 'block';
+            ui.checkUpdateButton.disabled = false;
+            ui.otaProgressContainer.style.display = 'none';
+            ui.otaProgressBar.style.width = '0%';
+            ui.otaProgressBar.textContent = '0%';
+            firmwareBinUrl = null;
+        }
+
+        async function checkVersion() {
+            const url = ui.updateUrlInput.value;
+            const currentVersion = ui.firmwareVersionDisplay.textContent;
+
+            if (!url) {
+                showToast("Lütfen bir Update URL girin.", "error");
+                return;
+            }
+            if (currentVersion === "Bilinmiyor" || !currentVersion) {
+                showToast("Mevcut firmware versiyonu okunamadı. Lütfen ayarları yenileyin.", "error");
+                return;
+            }
+
+            ui.checkUpdateButton.disabled = true;
+            showToast("Versiyon kontrol ediliyor...");
+
+            try {
+                // Önbelleği atlamak için parametre ekliyoruz.
+                // Bu, sunucunun her zaman en güncel dosyayı göndermesini sağlar.
+                const cacheBustedUrl = `${url}?_=${new Date().getTime()}`;
+                const response = await fetch(cacheBustedUrl, { cache: 'no-cache' }); // Ek güvenlik için no-cache de ekledik
+
+                if (!response.ok) {
+                    throw new Error(`Sunucu hatası! Status: ${response.status}`);
+                }
+
+                const versionInfo = await response.json();
+                const latestVersion = versionInfo.latest_version;
+
+                if (!latestVersion) {
+                    showToast("Güncelleme sunucusundan geçersiz versiyon bilgisi alındı.", "error");
+                    ui.checkUpdateButton.disabled = false;
+                    return;
+                }
+
+                // Yeni karşılaştırma fonksiyonunu kullan
+                const comparisonResult = compareVersions(currentVersion, latestVersion);
+
+                if (true || comparisonResult === -1) { // -1 demek: currentVersion < latestVersion
+                    showToast(`Yeni versiyon bulundu: ${latestVersion}`, "success");
+                    firmwareBinUrl = versionInfo.bin_url;
+                    newFirmwareVersion = latestVersion;
+                    ui.checkUpdateButton.style.display = 'none';
+                    ui.startUpdateButton.style.display = 'block';
+                } else if (comparisonResult === 1) { // 1 demek: currentVersion > latestVersion
+                    showToast(`Cihazınızda daha yeni bir versiyon var: ${currentVersion}. Sunucu versiyonu: ${latestVersion}`, "info");
+                    ui.checkUpdateButton.disabled = false;
+                }
+                else { // 0 demek: Versiyonlar aynı
+                    showToast("Cihazınız güncel.", "info");
+                    ui.checkUpdateButton.disabled = false;
+                }
+
+            } catch (error) {
+                console.error("Version check failed:", error);
+                showToast(`Versiyon kontrolü başarısız oldu: ${error.message}`, "error");
+                ui.checkUpdateButton.disabled = false;
+            }
+        }
+
+        // gate-admin-panel.html -> <script> etiketi içindeki bu fonksiyonu güncelleyin
+
+        async function startFirmwareUpdate() {
+            if (!firmwareBinUrl) {
+                showToast("Firmware URL'i bulunamadı.", "error");
+                return;
+            }
+            if (!confirm("Firmware indirilecek ve cihaza yüklenecek. Bu işlemden sonra cihaz yeniden başlayacak. Onaylıyor musunuz?")) {
+                return;
+            }
+
+            isUpdateInProgress = true;
+            ui.startUpdateButton.style.display = 'none';
+            ui.otaProgressContainer.style.display = 'block';
+
+            try {
+                showToast("Firmware indiriliyor...", "info");
+                const response = await fetch(`${firmwareBinUrl}?v=${new Date().getTime()}`);
+                if (!response.ok) throw new Error(`Download failed: ${response.statusText}`);
+                const firmwareBinary = await response.arrayBuffer();
+
+                showToast("Cihaz hazırlanıyor...", "info");
+                const startCommand = { command: "start", size: firmwareBinary.byteLength };
+
+                // Cihazdan "ota_ready" ve mevcut ilerleme bilgisini bekle
+                const readyPromise = new Promise(resolve => { otaReadyPromiseResolver = resolve; });
+                await otaControlCharacteristic.writeValue(new TextEncoder().encode(JSON.stringify(startCommand)));
+                const initialProgress = await readyPromise;
+
+                // 5 paketlik bir geri sarma yap
+                const rewindBytes = 5 * otaChunkSize;
+                let startByte = initialProgress > rewindBytes ? initialProgress - rewindBytes : 0;
+
+                showToast(`Güncellemeye ${Math.round((startByte / firmwareBinary.byteLength) * 100)}% noktasından devam ediliyor...`, "info");
+
+                // Gönderimi geri sarılmış noktadan başlat
+                await sendFirmwareFile(firmwareBinary, startByte);
+
+            } catch (error) {
+                console.error("Firmware update failed:", error);
+                showToast(`Hata: ${error.message}`, "error");
+                resetOtaUi();
+            }
+        }
+
+
+
+
+        // Bu fonksiyonu HTML dosyanızdaki mevcut olanla tamamen değiştirin
+        async function sendFirmwareFile(firmwareBinary, startFromByte = 0) {
+            showToast("Firmware cihaza yükleniyor...", "info");
+            const totalChunks = Math.ceil(firmwareBinary.byteLength / otaChunkSize);
+            const windowSize = otaWindowSize;
+            let chunksSentInWindow = 0;
+            let startChunk = Math.floor(startFromByte / otaChunkSize);
+            let windowStartIndex = startChunk;
+
+            for (let i = startChunk; i < totalChunks; i++) {
+                if (!isUpdateInProgress) {
+                    showToast("Güncelleme iptal edildi.", "info");
+                    const abortCommand = { command: "abort" };
+                    await otaControlCharacteristic.writeValue(new TextEncoder().encode(JSON.stringify(abortCommand)));
+                    return;
+                }
+
+                const chunkData = firmwareBinary.slice(i * otaChunkSize, (i + 1) * otaChunkSize);
+                const crc = calculateCrc32(chunkData);
+                const packet = new ArrayBuffer(4 + chunkData.byteLength);
+                const packetView = new DataView(packet);
+                packetView.setUint32(0, crc, true);
+                new Uint8Array(packet, 4).set(new Uint8Array(chunkData));
+
+                await otaDataCharacteristic.writeValueWithoutResponse(packet);
+                chunksSentInWindow++;
+
+                await new Promise(resolve => setTimeout(resolve, 5)); // Stabilite için eklendi
+
+                if (chunksSentInWindow >= windowSize || i === totalChunks - 1) {
+                    console.log(`Window sent (${chunksSentInWindow} chunks). Waiting for ACK...`);
+                    const ackPromise = new Promise(resolve => { otaAckPromiseResolver = resolve; });
+                    const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("OTA ACK Timeout")), 10000));
+
+                    await Promise.race([ackPromise, timeoutPromise]);
+
+                    if (otaShouldResend) {
+                        i = windowStartIndex - 1;
+                        otaShouldResend = false;
+                        chunksSentInWindow = 0;
+                        console.log("NACK received. Resending window starting from chunk " + windowStartIndex);
+                        continue;
+                    }
+
+                    console.log("ACK Received. Continuing...");
+                    windowStartIndex = i + 1;
+                    chunksSentInWindow = 0;
+                }
+            }
+
+            showToast("Yükleme tamamlandı, cihaz doğrulanıyor...", "info");
+            const endCommand = { command: "end" };
+            await otaControlCharacteristic.writeValue(new TextEncoder().encode(JSON.stringify(endCommand)));
+        }
+
+
+
         // --- UI/Helper Functions ---
         function onDisconnected() {
             showToast("Cihaz bağlantısı koptu.", "error");
@@ -931,6 +1299,30 @@
             if (toastTimeout) clearTimeout(toastTimeout);
             toastTimeout = setTimeout(() => { toast.style.display = 'none'; }, 3000);
         }
+
+        // CRC32 hesaplama fonksiyonu ve tablosu
+        const crc32Table = (() => {
+            let c, table = [];
+            for (let n = 0; n < 256; n++) {
+                c = n;
+                for (let k = 0; k < 8; k++) {
+                    c = ((c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1));
+                }
+                table[n] = c;
+            }
+            return table;
+        })();
+
+        function calculateCrc32(buffer) {
+            let crc = 0 ^ (-1);
+            const view = new Uint8Array(buffer);
+            for (let i = 0; i < view.length; i++) {
+                crc = (crc >>> 8) ^ crc32Table[(crc ^ view[i]) & 0xFF];
+            }
+            return (crc ^ (-1)) >>> 0;
+        };
+
+
     </script>
 </body>
 

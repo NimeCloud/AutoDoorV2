@@ -1,4 +1,6 @@
+#include <esp_rom_crc.h> // CRC hesaplama için gerekli
 #include "common.cpp"
+#include <Update.h>
 
 // Key: Araç MAC adresi (String), Value: Gönderilen Nonce (String)
 std::map<String, String> challengeNonces;
@@ -102,6 +104,8 @@ struct DeviceSettings
   String versionMajor;
   String versionMinor;
   String versionBuild;
+
+  char updateUrl[128];
 };
 
 // Global Değişkenler
@@ -121,6 +125,12 @@ bool shouldBeep = false;                        // Motor hareket halindeyken bip
 
 unsigned long discoveryScanStartTime = 0; // Eşleşme taraması için başlangıç zamanı
 
+// OTA Güncelleme Değişkenleri
+const int OTA_PACKET_WINDOW_SIZE = 20; // Her 20 pakette bir ACK gönderilecek
+const int OTA_CHUNK_SIZE = 500;        // Paket boyutu (500 byte)
+int last_ota_progress_percent = 0;
+int ota_packets_received_in_window = 0;
+
 struct SecurityState
 {
   int pinFailedAttempts = 0;
@@ -133,6 +143,9 @@ BLECharacteristic *pSettingsChar;
 BLECharacteristic *pStatusChar;
 BLECharacteristic *pPinAuthChar;
 bool isAuthenticated = false;
+bool isUpdateInProgress = false;
+unsigned long ota_progress = 0;
+unsigned long ota_total_size = 0;
 
 // Beacon yayını için zamanlama değişkenleri
 unsigned long lastBeaconTime = 0;
@@ -267,6 +280,8 @@ void loadSettings()
   settings.operationMode = (GateOperationMode)preferences.getInt("opMode", MODE_NORMAL);
   settings.pinCode = preferences.getString("pinCode", "");
 
+  preferences.getString("updateUrl", settings.updateUrl, sizeof(settings.updateUrl));
+
   preferences.end();
   logMessage("Settings loaded from NVRAM.", 0, settings.logLevel);
 }
@@ -285,6 +300,8 @@ void saveSettings()
 
   preferences.putInt("opMode", settings.operationMode);
   preferences.putString("pinCode", settings.pinCode);
+
+  preferences.putString("updateUrl", settings.updateUrl);
 
   preferences.end();
   isSettingsChanged = false;
@@ -368,6 +385,179 @@ void printRegisteredDevices()
   }
   logMessage("-------------------------------------------------", 0, settings.logLevel);
 }
+
+// ========================= OTA & BLE Karakteristikleri ve Callback'ler =========================
+
+void sendUpdateStatus(const String &message, const String &type, bool reboot)
+{
+  if (pStatusChar)
+  {
+    JsonDocument doc;
+    doc["event"] = "update_status";
+    doc["message"] = message;
+    doc["type"] = type; // "info", "success", "error"
+    if (reboot)
+    {
+      doc["reboot"] = true;
+    }
+
+    String output;
+    serializeJson(doc, output);
+    pStatusChar->setValue(output.c_str());
+    pStatusChar->notify();
+  }
+}
+class OtaControlCallbacks : public BLECharacteristicCallbacks
+{
+  void onWrite(BLECharacteristic *pCharacteristic)
+  {
+    std::string value = pCharacteristic->getValue();
+    JsonDocument doc;
+    deserializeJson(doc, value);
+
+    String command = doc["command"];
+    logMessage("OTA Control Command: " + command, 0, settings.logLevel);
+
+    if (command == "start")
+    {
+      if (isUpdateInProgress)
+      {
+        logMessage("OTA Error: Update already in progress.", 0, settings.logLevel);
+        return;
+      }
+
+      ota_total_size = doc["size"];
+      if (Update.begin(ota_total_size))
+      {
+        isUpdateInProgress = true;
+        if (pStatusChar)
+        {
+          JsonDocument readyDoc;
+          readyDoc["event"] = "ota_ready";
+          readyDoc["progress"] = ota_progress;
+          String output;
+          serializeJson(readyDoc, output);
+          pStatusChar->setValue(output.c_str());
+          pStatusChar->notify();
+        }
+        logMessage("OTA Ready. Current progress: " + String(ota_progress) + "/" + String(ota_total_size), 0, settings.logLevel);
+      }
+      else
+      {
+        logMessage("OTA Error: Not enough space. Error: " + String(Update.errorString()), 0, settings.logLevel);
+        sendUpdateStatus("Yetersiz alan", "error", false);
+      }
+    } // "start" bloğu burada BİTMEMELİYDİ
+    else if (command == "end")
+    {
+      if (!isUpdateInProgress)
+        return;
+      isUpdateInProgress = false;
+
+      if (Update.end(true))
+      {
+        logMessage("OTA Success! Rebooting...", 0, settings.logLevel);
+        sendUpdateStatus("Güncelleme başarılı! Cihaz yeniden başlatılıyor...", "success", true);
+        delay(100);
+        ESP.restart();
+      }
+      else
+      {
+        logMessage("OTA Error on Update.end(). Error: " + String(Update.errorString()), 0, settings.logLevel);
+        sendUpdateStatus("Doğrulama hatası: " + String(Update.errorString()), "error", false);
+      }
+    } // "end" bloğu burada biter
+    else if (command == "abort")
+    {
+      isUpdateInProgress = false;
+      Update.abort();
+      logMessage("OTA Aborted by client.", 0, settings.logLevel);
+    } // "abort" bloğu burada biter
+
+  } // onWrite
+}; // OtaControlCallbacks
+
+class OtaDataCallbacks : public BLECharacteristicCallbacks
+{
+  
+  // Bu fonksiyonu C++ dosyanızdaki mevcut olanla değiştirin
+void onWrite(BLECharacteristic *pCharacteristic)
+{
+  if (!isUpdateInProgress) return;
+
+  std::string value = pCharacteristic->getValue();
+  const uint8_t* pData = (const uint8_t*)value.data();
+  size_t len = value.length();
+
+  if (len <= 4) {
+    logMessage("OTA Error: Invalid packet received (too small).", 0, settings.logLevel);
+    return;
+  }
+  
+  uint32_t received_crc;
+  memcpy(&received_crc, pData, 4);
+
+  const uint8_t* firmware_chunk = pData + 4;
+  size_t firmware_len = len - 4;
+  uint32_t calculated_crc = esp_rom_crc32_le(0, firmware_chunk, firmware_len);
+
+  if (received_crc != calculated_crc) {
+      logMessage("OTA CRC Mismatch! Requesting resend.", 0, settings.logLevel);
+      if (pStatusChar) {
+          JsonDocument nackDoc;
+          nackDoc["event"] = "ota_nack";
+          String output;
+          serializeJson(nackDoc, output);
+          pStatusChar->setValue(output.c_str());
+          pStatusChar->notify();
+      }
+      return;
+  }
+
+  if (Update.write((uint8_t*)firmware_chunk, firmware_len) != firmware_len) {
+    Update.abort();
+    isUpdateInProgress = false;
+    logMessage("OTA Error on write.", 0, settings.logLevel);
+    sendUpdateStatus("Yazma sırasında hata oluştu: " + String(Update.errorString()), "error", false);
+    return;
+  }
+
+  ota_progress += firmware_len;
+  ota_packets_received_in_window++;
+
+  int current_percent = ((long long)ota_progress * 100) / ota_total_size;
+
+  if (current_percent >= last_ota_progress_percent + 5 || ota_progress == ota_total_size)
+  {
+    Serial.printf("OTA Progress: %d%%\n", current_percent);
+
+    if (pStatusChar) {
+      JsonDocument doc;
+      doc["event"] = "ota_progress";
+      doc["progress"] = current_percent;
+      String output;
+      serializeJson(doc, output);
+      pStatusChar->setValue(output.c_str());
+      pStatusChar->notify();
+    }
+    last_ota_progress_percent = current_percent;
+  }
+  
+  if (ota_packets_received_in_window >= OTA_PACKET_WINDOW_SIZE || ota_progress == ota_total_size)
+  {
+    if (pStatusChar) {
+      JsonDocument ackDoc;
+      ackDoc["event"] = "ota_ack";
+      String output;
+      serializeJson(ackDoc, output);
+      pStatusChar->setValue(output.c_str());
+      pStatusChar->notify();
+    }
+    ota_packets_received_in_window = 0;
+  }
+}
+  
+};
 
 class MyCharacteristicCallbacks : public BLECharacteristicCallbacks
 {
@@ -632,8 +822,9 @@ void ledTask(void *pvParameters)
         // Eğer bu tekli bir "uzun yanma" deseni DEĞİLSE veya son flaş ise LED'i kapat
         // currentPattern.count > 1 ise normal flaş dizisidir, her flaş sonrası kapat.
         // currentPattern.count == 1 ise tek bir "uzun yanma"dır, bu durumda döngünün sonunda kapatılır.
-        if (currentPattern.count > 1 || i == currentPattern.count - 1) {
-            digitalWrite(INTERNAL_LED_PIN, LED_OFF);
+        if (currentPattern.count > 1 || i == currentPattern.count - 1)
+        {
+          digitalWrite(INTERNAL_LED_PIN, LED_OFF);
         }
 
         if (i < currentPattern.count - 1)
@@ -661,7 +852,6 @@ void ledTask(void *pvParameters)
     }
   }
 }
-
 
 void stateMachineTask(void *pvParameters)
 {
@@ -1085,10 +1275,50 @@ class MyServerCallbacks : public BLEServerCallbacks
   {
     isAuthenticated = false;
     logMessage("BLE Client Connected.", 0, settings.logLevel);
+
+    // Bağlantı kurulur kurulmaz, OTA yapılandırmasını web paneline gönder.
+    // vTaskDelay, BLE yığınının bağlantıyı tamamen kurmasına zaman tanır.
+    vTaskDelay(pdMS_TO_TICKS(100)); // 100ms bekle
+
+    if (pStatusChar && pServer->getConnectedCount() > 0)
+    {
+
+      // Cihaz ile istemci arasında anlaşılan MTU değerini al
+
+      JsonDocument doc;
+      doc["event"] = "ota_config";
+      doc["windowSize"] = OTA_PACKET_WINDOW_SIZE; // C++'taki sabiti gönder
+      doc["chunkSize"] = OTA_CHUNK_SIZE;
+      String output;
+      serializeJson(doc, output);
+      pStatusChar->setValue(output.c_str());
+      pStatusChar->notify();
+
+      char logBuffer[100];
+      snprintf(logBuffer, sizeof(logBuffer), "Sent OTA config to client. (ChunkSize: %d, WindowSize: %d)", OTA_CHUNK_SIZE, OTA_PACKET_WINDOW_SIZE);
+      logMessage(logBuffer, 0, settings.logLevel);
+    }
   }
   void onDisconnect(BLEServer *pServer)
   {
     logMessage("BLE Client Disconnected.", 0, settings.logLevel);
+
+    // Eğer bağlantı, bir OTA güncellemesinin ortasında koptuysa...
+    if (isUpdateInProgress)
+    {
+      logMessage("OTA Aborted due to disconnect. Cleaning up...", 0, settings.logLevel);
+
+      // 1. Devam eden flash yazma işlemini güvenli bir şekilde sonlandır.
+      Update.abort();
+
+      // 2. Tüm OTA durum değişkenlerini sıfırla.
+      isUpdateInProgress = false;
+      ota_progress = 0;
+      ota_total_size = 0;
+      last_ota_progress_percent = 0;
+    }
+
+    // Cihazın yeni bağlantılar için tekrar reklam yapmasını sağla.
     BLEDevice::startAdvertising();
   }
 };
@@ -1112,7 +1342,9 @@ class SettingsCharacteristicCallbacks : public BLECharacteristicCallbacks
     jsonDoc["openLimit"] = settings.openLimit;
     jsonDoc["opMode"] = settings.operationMode;
     jsonDoc["authReq"] = settings.authorizationRequired;
-    jsonDoc["pinExists"] = !settings.pinCode.isEmpty(); // <<< EKSİK OLAN VE EKLENEN SATIR
+    jsonDoc["pinExists"] = !settings.pinCode.isEmpty();
+    jsonDoc["updateUrl"] = settings.updateUrl;
+    jsonDoc["firmwareVersion"] = getFirmwareVersion();
 
     // 3. JSON'u Panele Gönder
     String jsonString;
@@ -1228,8 +1460,6 @@ class SettingsCharacteristicCallbacks : public BLECharacteristicCallbacks
   }
 };
 
-// gate.cpp -> setup() fonksiyonundan önce uygun bir yere ekleyin
-
 class PinAuthCharacteristicCallbacks : public BLECharacteristicCallbacks
 {
   void onWrite(BLECharacteristic *pCharacteristic)
@@ -1307,6 +1537,13 @@ class PinAuthCharacteristicCallbacks : public BLECharacteristicCallbacks
 };
 
 // ========================= Kurulum ve Döngü =========================
+void setupSimple()
+{
+  Serial.begin(115200);
+  Serial.println("Setup basladi...");
+
+  Serial.println("Setup tamamlandi.");
+}
 
 void setup()
 {
@@ -1314,7 +1551,6 @@ void setup()
   Serial.println();
 
   logMessage("Gate Control System Starting...", 0, settings.logLevel);
-  
 
   // Pinleri ayarla
   pinMode(INTERNAL_LED_PIN, OUTPUT);
@@ -1455,6 +1691,19 @@ void setup()
       BLECharacteristic::PROPERTY_NOTIFY);
   pStatusChar->addDescriptor(new BLE2902());
 
+  // --- YENİ OTA KARAKTERİSTİKLERİ ---
+  BLECharacteristic *pOtaControlChar = pService->createCharacteristic(
+      CHAR_OTA_CONTROL_UUID,
+      BLECharacteristic::PROPERTY_WRITE);
+  pOtaControlChar->setCallbacks(new OtaControlCallbacks());
+
+  BLECharacteristic *pOtaDataChar = pService->createCharacteristic(
+      CHAR_OTA_DATA_UUID,
+      BLECharacteristic::PROPERTY_WRITE_NR // WRITE NO RESPONSE for speed
+  );
+  pOtaDataChar->setCallbacks(new OtaDataCallbacks());
+
+  // --- BLE Servisini Başlatma ---
   pService->start();
 
   BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
@@ -1649,7 +1898,7 @@ void loop()
 
   case AUTH_IDLE:
     // Boşta modundaysak...
-
+    // VE ÖNEMLİSİ: BİR OTA GÜNCELLEMESİ YAPILMIYORKEN...
     if (!registeredDevices.empty() && settings.operationMode != MODE_DISABLED)
     {
       if (currentTime - lastBeaconTime > BEACON_INTERVAL_MS)
@@ -1658,7 +1907,6 @@ void loop()
         lastBeaconTime = currentTime;
       }
     }
-
     // Eşleşme bekleniyorsa hiçbir şey yapma.
     break;
   }

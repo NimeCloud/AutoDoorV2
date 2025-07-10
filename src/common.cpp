@@ -41,6 +41,9 @@ const uint8_t PMK[] = {0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF, 0xFE, 0xD
 #define CHAR_PIN_AUTH_UUID "b2c3d4e5-6789-4f0b-c1d2-a3b4c5d6e7f8"    // Yeni PIN karakteristiği UUID'si
 #define CHAR_STATUS_UUID "c3d4e5f6-7890-4a1c-b2d3-e4f5a6b7c8d9"      // Yeni Durum/Bildirim karakteristiği UUID'si
 #define CHAR_DEVICE_MGMT_UUID "d4e5f6a7-8901-4b2d-c3e4-f5a6b7c8d9e0" // <<< YENİ SATIR
+// --- YENİ OTA UUID'LERİ ---
+#define CHAR_OTA_CONTROL_UUID "f0b1c2d3-e4f5-a6b7-c8d9-e0f1a2b3c4d5"
+#define CHAR_OTA_DATA_UUID "1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d"
 
 const uint8_t broadcastAddress[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
