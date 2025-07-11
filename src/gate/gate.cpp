@@ -130,6 +130,10 @@ const int OTA_PACKET_WINDOW_SIZE = 20; // Her 20 pakette bir ACK gönderilecek
 const int OTA_CHUNK_SIZE = 500;        // Paket boyutu (500 byte)
 int last_ota_progress_percent = 0;
 int ota_packets_received_in_window = 0;
+volatile bool should_send_ota_ack = false; // volatile, farklı görevler arası kullanım için önemlidir
+volatile uint32_t last_ack_window_id = 0;
+volatile unsigned long last_ack_sent_time = 0;
+const unsigned long ACK_RESEND_TIMEOUT_MS = 5000; // 5 saniye
 
 struct SecurityState
 {
@@ -146,6 +150,7 @@ bool isAuthenticated = false;
 bool isUpdateInProgress = false;
 unsigned long ota_progress = 0;
 unsigned long ota_total_size = 0;
+volatile uint32_t ota_resume_window_id = 0;
 
 // Beacon yayını için zamanlama değişkenleri
 unsigned long lastBeaconTime = 0;
@@ -412,87 +417,107 @@ void sendUpdateStatus(const String &message, const String &type, bool reboot)
 class OtaControlCallbacks : public BLECharacteristicCallbacks
 {
 
-  // gate.cpp -> OtaControlCallbacks::onWrite fonksiyonunu bununla tamamen değiştirin
   void onWrite(BLECharacteristic *pCharacteristic)
   {
     std::string value = pCharacteristic->getValue();
     JsonDocument doc;
-    deserializeJson(doc, value);
+    DeserializationError err = deserializeJson(doc, value);
+
+    if (err)
+    {
+      logMessage("Invalid JSON in OtaControlCallbacks", 0, settings.logLevel);
+      return;
+    }
 
     String command = doc["command"];
     logMessage("OTA Control Command: " + command, 0, settings.logLevel);
 
     if (command == "start")
     {
+
       if (isUpdateInProgress)
       {
         logMessage("OTA Error: Update already in progress.", 0, settings.logLevel);
         return;
       }
 
-      // NVS'i kontrol et, ama sadece loglamak için.
-      preferences.begin("ota_state", true);
-      unsigned long previous_progress = preferences.getULong("ota_prog", 0);
-      preferences.end();
-      if (previous_progress > 0)
+      if (ota_progress > 0)
       {
-        logMessage("Incomplete update found from a previous session. Starting fresh for safety.", 0, settings.logLevel);
-      }
-
-      // --- ÖNEMLİ DÜZELTME ---
-      // Her yeni 'start' komutunda, ilerlemeyi her zaman sıfırla.
-      // Bu, hard reset sonrası yaşanacak "Update.write" hatasını engeller.
-      ota_progress = 0;
-      last_ota_progress_percent = 0;
-      ota_packets_received_in_window = 0;
-
-      // NVS'teki kaydı da temizle
-      preferences.begin("ota_state", false);
-      preferences.putULong("ota_prog", 0);
-      preferences.end();
-
-      ota_total_size = doc["size"];
-      if (Update.begin(ota_total_size))
-      {
-        isUpdateInProgress = true;
-        if (pStatusChar)
-        {
-          JsonDocument readyDoc;
-          readyDoc["event"] = "ota_ready";
-          readyDoc["progress"] = 0; // Her zaman 0 gönder
-          String output;
-          serializeJson(readyDoc, output);
-          pStatusChar->setValue(output.c_str());
-          pStatusChar->notify();
-        }
-        logMessage("OTA Ready. Starting new update from scratch. Total size: " + String(ota_total_size), 0, settings.logLevel);
+        last_ack_window_id = ota_resume_window_id; // BLE yeniden bağlanırsa kaldığı yerden devam et
       }
       else
       {
-        logMessage("OTA Error: Not enough space. Error: " + String(Update.errorString()), 0, settings.logLevel);
-        sendUpdateStatus("Yetersiz alan", "error", false);
+        last_ack_window_id = 0; // Tam yeni bir OTA ise
       }
+
+
+      last_ack_sent_time = 0;
+
+      if (ota_progress > 0)
+      {
+        logMessage("Checked NVS for resume. Progress found: " + String(ota_progress) + " bytes.", 0, settings.logLevel);
+      }
+
+      ota_total_size = doc["size"];
+
+      // Sadece ve sadece güncelleme en başından başlıyorsa Update.begin() çağır.
+      if (ota_progress == 0)
+      {
+        logMessage("This is a fresh update. Starting OTA process...", 0, settings.logLevel);
+        if (!Update.begin(ota_total_size))
+        {
+          logMessage("OTA Error: Not enough space or partition error. Error: " + String(Update.errorString()), 0, settings.logLevel);
+          sendUpdateStatus("Yetersiz alan veya bölümleme hatası.", "error", false);
+          return; // Hata varsa devam etme
+        }
+      }
+      else
+      {
+        logMessage("This is a resumed update. Skipping Update.begin().", 0, settings.logLevel);
+        // Devam eden bir güncelleme için Update.begin() tekrar çağrılmaz.
+      }
+
+      isUpdateInProgress = true;
+      if (pStatusChar)
+      {
+        JsonDocument readyDoc;
+        readyDoc["event"] = "ota_ready";
+        readyDoc["progress"] = ota_progress; // NVS'ten gelen güncel ilerlemeyi gönder
+        String output;
+        serializeJson(readyDoc, output);
+        pStatusChar->setValue(output.c_str());
+        pStatusChar->notify();
+      }
+      logMessage("OTA Ready. Resuming/Starting update from " + String(ota_progress), 0, settings.logLevel);
     }
     else if (command == "end")
     {
       if (!isUpdateInProgress)
         return;
 
+      // "end" komutu geldiğinde, gerçekten tüm verinin alınıp alınmadığını kontrol et.
+      if (ota_progress != ota_total_size)
+      {
+        logMessage("OTA Error: 'end' received but data transfer is incomplete. Expected " + String(ota_total_size) + " but got " + String(ota_progress), 0, settings.logLevel);
+        sendUpdateStatus("Veri aktarımı eksik, işlem iptal edildi.", "error", false);
+        Update.abort();
+
+        isUpdateInProgress = false;
+        return; // İşlemi sonlandır
+      }
+
+      // Güncelleme başarılı ise, ilerlemeyi sıfırla
+      isUpdateInProgress = false;
+
       if (Update.end(true))
       {
-        isUpdateInProgress = false;
-        preferences.begin("ota_state", false);
-        preferences.putULong("ota_prog", 0); // Başarılı, ilerlemeyi sıfırla
-        preferences.end();
+        ota_progress = 0; // Güncelleme başarılı ise ilerlemeyi sıfırla
 
-        logMessage("OTA Success! Rebooting...", 0, settings.logLevel);
-        sendUpdateStatus("Güncelleme başarılı! Cihaz yeniden başlatılıyor...", "success", true);
-        delay(100);
-        ESP.restart();
+        logMessage("OTA successful. Cleared saved progress.", 0, settings.logLevel);
+        sendUpdateStatus("Güncelleme başarılı! Yeniden başlatmak için onay bekleniyor.", "success", true);
       }
       else
       {
-        isUpdateInProgress = false; // Hata durumunda da ilerlemeyi durdur
         logMessage("OTA Error on Update.end(). Error: " + String(Update.errorString()), 0, settings.logLevel);
         sendUpdateStatus("Doğrulama hatası: " + String(Update.errorString()), "error", false);
       }
@@ -501,11 +526,15 @@ class OtaControlCallbacks : public BLECharacteristicCallbacks
     {
       isUpdateInProgress = false;
       Update.abort();
-      preferences.begin("ota_state", false);
-      // TODO: İptal edildiğinde ilerlemeyi sıfırlama
-      preferences.putULong("ota_prog", 0); // İptal edildi, ilerlemeyi sıfırla
-      preferences.end();
-      logMessage("OTA Aborted by client.", 0, settings.logLevel);
+      ota_progress = 0; // İptal edildiğinde ilerlemeyi sıfırla
+
+      logMessage("OTA Aborted by client. Cleared saved progress.", 0, settings.logLevel);
+    }
+    else if (command == "reboot")
+    {
+      logMessage("Reboot command received. Restarting device.", 0, settings.logLevel);
+      delay(100);
+      ESP.restart();
     }
   }
 
@@ -517,6 +546,8 @@ class OtaDataCallbacks : public BLECharacteristicCallbacks
   // Bu fonksiyonu C++ dosyanızdaki mevcut olanla değiştirin
   void onWrite(BLECharacteristic *pCharacteristic)
   {
+    last_ack_sent_time = 0;
+
     if (!isUpdateInProgress)
       return;
 
@@ -568,7 +599,11 @@ class OtaDataCallbacks : public BLECharacteristicCallbacks
 
     if (current_percent >= last_ota_progress_percent + 1 || ota_progress == ota_total_size)
     {
-      Serial.printf("OTA Progress: %d%%\n", current_percent);
+
+      // Serial.printf("OTA Progress: %d%%\n", current_percent);
+      char progressBuffer[32];
+      snprintf(progressBuffer, sizeof(progressBuffer), "OTA Progress: %d%%", current_percent);
+      logMessage(String(progressBuffer), 1, settings.logLevel);
 
       if (pStatusChar)
       {
@@ -585,23 +620,12 @@ class OtaDataCallbacks : public BLECharacteristicCallbacks
 
     if (ota_packets_received_in_window >= OTA_PACKET_WINDOW_SIZE || ota_progress == ota_total_size)
     {
-      if (pStatusChar)
-      {
-        JsonDocument ackDoc;
-        ackDoc["event"] = "ota_ack";
-        String output;
-        serializeJson(ackDoc, output);
-        pStatusChar->setValue(output.c_str());
-        pStatusChar->notify();
-      }
+
+      last_ack_window_id++; // Her yeni ACK için pencere numarasını artır
+      ota_resume_window_id = last_ack_window_id;
+      should_send_ota_ack = true;
       ota_packets_received_in_window = 0;
-
-      preferences.begin("ota_state", false);
-      preferences.putULong("ota_prog", ota_progress);
-      preferences.end();
-
-      // <<< YENİ LOG (Seviye 1: Verbose) >>>
-      logMessage("Progress " + String(ota_progress) + " saved to NVS.", 1, settings.logLevel);
+      last_ack_sent_time = 0; // Tekrar gönderim sayacını sıfırla
     }
   }
 };
@@ -1354,7 +1378,8 @@ class MyServerCallbacks : public BLEServerCallbacks
     if (isUpdateInProgress)
     {
       logMessage("OTA session interrupted by disconnect. Progress is SAVED for resume.", 0, settings.logLevel);
-
+      // Devam eden flash yazma işlemini güvenle durdur ve Update kütüphanesini temizle.
+      // Update.abort();
       isUpdateInProgress = false;
     }
 
@@ -1614,28 +1639,6 @@ void setup()
   digitalWrite(INTERNAL_LED_PIN, LED_OFF);
   delay(1000);
 
-  // Cihaz her açıldığında, önce yarım kalmış bir OTA olup olmadığını kontrol et.
-  preferences.begin("ota_state", true); // Kalıcı hafızayı okuma modunda aç
-  bool hasIncompleteUpdate = preferences.isKey("ota_prog") && preferences.getULong("ota_prog", 0) > 0;
-  preferences.end();
-
-  if (hasIncompleteUpdate)
-  {
-    logMessage("Incomplete OTA update detected from previous session. Cleaning up...", 0, settings.logLevel);
-
-    // 1. Update kütüphanesinin durumunu temizle ve OTA bölümünü geçersiz kıl.
-    // Bu, bootloader'ın kafasının karışmasını önler.
-    Update.abort();
-
-    // 2. Kalıcı hafızadaki ilerleme kaydını sıfırla.
-    preferences.begin("ota_state", false); // Yazma modunda aç
-    preferences.putULong("ota_prog", 0);
-    preferences.end();
-    delay(100); // Hafızanın güncellenmesi için kısa bir bekleme
-
-    logMessage("OTA cleanup complete. System is ready for a fresh update.", 0, settings.logLevel);
-  }
-
   // Ayarları ve kayıtlı mac id'leri yükle
   loadSettings();
   printSettingsToSerial();
@@ -1821,6 +1824,44 @@ void sendDiscoveryProbe()
 void loop()
 {
   unsigned long currentTime = millis();
+
+  // Eğer bir güncelleme devam ediyorsa VE son ACK gönderildikten sonra 5 saniye geçtiyse...
+  if (isUpdateInProgress && should_send_ota_ack == false && last_ack_sent_time > 0 && (millis() - last_ack_sent_time > ACK_RESEND_TIMEOUT_MS))
+  {
+    logMessage("ACK probably lost. Resending ACK for window ID: " + String(last_ack_window_id), 1, settings.logLevel);
+    should_send_ota_ack = true; // Tekrar göndermeyi tetikle
+  }
+
+  // --- MEVCUT ACK GÖNDERME MANTIĞI (GÜNCELLENMİŞ) ---
+  if (should_send_ota_ack)
+  {
+    if (pStatusChar)
+    {
+      JsonDocument ackDoc;
+      ackDoc["event"] = "ota_ack";
+      ackDoc["id"] = last_ack_window_id; // Pencere numarasını ekle
+      String output;
+      serializeJson(ackDoc, output);
+      pStatusChar->setValue(output.c_str());
+      pStatusChar->notify();
+    }
+    last_ack_sent_time = millis(); // ACK gönderim zamanını kaydet
+    should_send_ota_ack = false;
+  }
+
+  if (should_send_ota_ack)
+  {
+    if (pStatusChar)
+    {
+      JsonDocument ackDoc;
+      ackDoc["event"] = "ota_ack";
+      String output;
+      serializeJson(ackDoc, output);
+      pStatusChar->setValue(output.c_str());
+      pStatusChar->notify();
+    }
+    should_send_ota_ack = false; // Bayrağı sıfırla
+  }
 
   // --- Başlangıçta Otomatik Tarama Tetikleyicisi ---
   // Cihaz açıldıktan 3 saniye sonra, eğer ayarlanmışsa, otomatik olarak eşleşme moduna girer.

@@ -131,6 +131,20 @@
             font-size: 16px;
         }
 
+        /* Slider'ların rengini ana mavi temasına uygun hale getir */
+        input[type="range"] {
+            accent-color: #007AFF;
+            /* Kaydırma yuvarlağının rengini ayarlar */
+        }
+
+        /* Checkbox'ların rengini ana mavi temasına uygun hale getir */
+        input[type="checkbox"] {
+            accent-color: #007AFF;
+            /* Checkbox işaretinin rengini ayarlar */
+            width: auto;
+            vertical-align: middle;
+        }
+
         #otaProgressBar {
 
             min-width: 40px;
@@ -494,7 +508,7 @@
                     <label>Mevcut Firmware Versiyonu:</label>
                     <p id="firmwareVersionDisplay" style="font-weight:bold;">Bilinmiyor</p>
                 </div>
-                <div class="input-group">
+                <div class="input-group" style="display: none;">
                     <label for="updateUrlInput">Update URL:</label>
                     <input type="url" id="updateUrlInput"
                         value="https://raw.githubusercontent.com/NimeCloud/GateControlFirmware/main/version.json">
@@ -515,6 +529,27 @@
         </div>
     </div>
     <div id="toast" class="toast"></div>
+
+    <div id="successModal" class="modal">
+        <div class="modal-content">
+            <h3 id="successModalTitle">İşlem Başarılı!</h3>
+            <p id="successModalMessage">Firmware güncellemesi başarıyla tamamlandı.</p>
+            <button id="rebootDeviceButton">Cihazı Yeniden Başlat</button>
+        </div>
+    </div>
+
+    <div id="updateConfirmModal" class="modal">
+        <div class="modal-content">
+            <h3 id="updateConfirmModalTitle">Yeni Güncelleme Bulundu!</h3>
+            <p id="updateConfirmModalMessage">Cihazınız için yeni bir firmware versiyonu mevcut. Şimdi yüklemek ister
+                misiniz?</p>
+            <div style="display: flex; gap: 10px; margin-top: 20px;">
+                <button id="cancelUpdateButton" class="btn-secondary" style="flex: 1;">İptal</button>
+                <button id="confirmUpdateButton" class="btn-success" style="flex: 1;">Onayla ve Yükle</button>
+            </div>
+        </div>
+    </div>
+
 
     <script>
         // UUIDs
@@ -542,6 +577,8 @@
         let otaChunkSize = 500;  // Varsayılan değer
         let otaShouldResend = false;
         let otaReadyPromiseResolver = null;
+        let otaCurrentWindowId = 0;
+
 
 
 
@@ -584,7 +621,15 @@
             startUpdateButton: document.getElementById('startUpdateButton'),
             otaUpdateContainer: document.getElementById('otaUpdateContainer'),
             otaProgressBar: document.getElementById('otaProgressBar'),
-            otaProgressContainer: document.querySelector('#otaUpdateContainer .progress-container')
+            otaProgressContainer: document.querySelector('#otaUpdateContainer .progress-container'),
+
+            successModal: document.getElementById('successModal'),
+            rebootDeviceButton: document.getElementById('rebootDeviceButton'),
+
+            updateConfirmModal: document.getElementById('updateConfirmModal'),
+            updateConfirmModalMessage: document.getElementById('updateConfirmModalMessage'),
+            confirmUpdateButton: document.getElementById('confirmUpdateButton'),
+            cancelUpdateButton: document.getElementById('cancelUpdateButton')
 
 
         };
@@ -605,12 +650,31 @@
         ui.checkUpdateButton.addEventListener('click', checkVersion);
         ui.startUpdateButton.addEventListener('click', startFirmwareUpdate);
 
+        ui.rebootDeviceButton.addEventListener('click', () => {
+            const rebootCommand = { command: "reboot" };
+            try {
+                otaControlCharacteristic.writeValue(new TextEncoder().encode(JSON.stringify(rebootCommand)));
+            } catch (error) {
+                console.log("Ignoring expected error on reboot command:", error.name);
+            }
+            ui.successModal.style.display = 'none';
+            // Cihaz yeniden başlayacağı için bağlantının kopmasını bekliyoruz
+            setTimeout(() => onDisconnected(false), 2000);
+        });
 
+        ui.confirmUpdateButton.addEventListener('click', () => {
+            ui.updateConfirmModal.style.display = 'none'; // Modalı kapat
+            startFirmwareUpdate(); // Güncelleme işlemini başlat
+        });
+
+        ui.cancelUpdateButton.addEventListener('click', () => {
+            ui.updateConfirmModal.style.display = 'none'; // Modalı kapat
+            resetOtaUi(); // Güncelleme arayüzünü sıfırla
+        });
 
         // --- Core Functions ---
 
         function closeModal() { ui.foundDeviceModal.style.display = 'none'; }
-
 
 
         async function startDiscoveryScan() {
@@ -682,9 +746,15 @@
                         break;
 
                     case 'ota_ack':
-                        if (otaAckPromiseResolver) {
-                            otaAckPromiseResolver(); // Bekleyen Promise'i çözerek gönderimin devam etmesini sağla
-                            otaAckPromiseResolver = null; // Bir sonraki pencere için temizle
+
+                        // Sadece beklediğimiz pencerenin ACK'i geldiyse devam et
+                        if (data.id === otaCurrentWindowId) {
+                            if (otaAckPromiseResolver) {
+                                otaAckPromiseResolver();
+                                otaAckPromiseResolver = null;
+                            }
+                        } else {
+                            console.log(`Received stray ACK for window ${data.id}, expecting ${otaCurrentWindowId}. Ignoring.`);
                         }
                         break;
 
@@ -776,6 +846,16 @@
                         showToast("Yeni cihaz başarıyla eşleştirildi!", "success");
                         setTimeout(renderDeviceList, 1000); // Listeyi 1 saniye sonra yenile
                         break;
+
+                    case 'update_status':
+                        if (data.reboot) { // Bu bayrak artık 'başarılı' anlamına geliyor
+                            ui.successModal.querySelector('#successModalMessage').innerText = data.message;
+                            ui.successModal.style.display = 'flex';
+                        } else {
+                            showToast(data.message, data.type || 'info');
+                        }
+                        break;
+
 
                     // Buraya gelecekte başka event'ler eklenebilir
                 }
@@ -1147,8 +1227,15 @@
                     showToast(`Yeni versiyon bulundu: ${latestVersion}`, "success");
                     firmwareBinUrl = versionInfo.bin_url;
                     newFirmwareVersion = latestVersion;
-                    ui.checkUpdateButton.style.display = 'none';
-                    ui.startUpdateButton.style.display = 'block';
+
+                    // Native confirm() yerine kendi modalımızı gösteriyoruz
+                    ui.updateConfirmModalMessage.innerHTML = `Mevcut Versiyon: <b>${currentVersion}</b><br>Yeni Versiyon: <b>${latestVersion}</b><br><br>Güncellemeyi başlatmak için onaylayın.`;
+                    ui.updateConfirmModal.style.display = 'flex';
+
+                    //ui.checkUpdateButton.style.display = 'none';
+                    //ui.startUpdateButton.style.display = 'block';
+
+
                 } else if (comparisonResult === 1) { // 1 demek: currentVersion > latestVersion
                     showToast(`Cihazınızda daha yeni bir versiyon var: ${currentVersion}. Sunucu versiyonu: ${latestVersion}`, "info");
                     ui.checkUpdateButton.disabled = false;
@@ -1162,6 +1249,11 @@
                 console.error("Version check failed:", error);
                 showToast(`Versiyon kontrolü başarısız oldu: ${error.message}`, "error");
                 ui.checkUpdateButton.disabled = false;
+
+            } finally {
+                // --- BU BLOK GÜNCELLENDİ ---
+                // Butonu her zaman tekrar aktif hale getir, çünkü onay modalda verilecek
+                ui.checkUpdateButton.disabled = false;
             }
         }
 
@@ -1172,13 +1264,12 @@
                 showToast("Firmware URL'i bulunamadı.", "error");
                 return;
             }
-            if (!confirm("Firmware indirilecek ve cihaza yüklenecek. Bu işlemden sonra cihaz yeniden başlayacak. Onaylıyor musunuz?")) {
-                return;
-            }
-
+            
+            
             isUpdateInProgress = true;
-            ui.startUpdateButton.style.display = 'none';
-            ui.otaProgressContainer.style.display = 'block';
+            ui.checkUpdateButton.style.display = 'none'; // "Kontrol Et" butonunu gizle
+            ui.startUpdateButton.style.display = 'none'; // "Yükle" butonunu da gizle
+            ui.otaProgressContainer.style.display = 'block'; // Sadece progress bar görünsün
 
             try {
                 showToast("Firmware indiriliyor...", "info");
@@ -1222,6 +1313,9 @@
             let startChunk = Math.floor(startFromByte / otaChunkSize);
             let windowStartIndex = startChunk;
 
+            otaCurrentWindowId = Math.floor(startChunk / windowSize);
+
+
             for (let i = startChunk; i < totalChunks; i++) {
                 if (!isUpdateInProgress) {
                     showToast("Güncelleme iptal edildi.", "info");
@@ -1243,19 +1337,20 @@
                 // Stabilite için bu gecikme kritik öneme sahiptir.
                 await new Promise(resolve => setTimeout(resolve, 5));
 
-                if (chunksSentInWindow >= windowSize || i === totalChunks - 1) {
+                if (chunksSentInWindow >= windowSize && i < totalChunks - 1) {
+                    otaCurrentWindowId++; // Bir sonraki pencere için beklenen ID'yi artır
+
                     console.log(`Window sent (${chunksSentInWindow} chunks). Waiting for ACK...`);
                     const ackPromise = new Promise(resolve => { otaAckPromiseResolver = resolve; });
                     const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("OTA ACK Timeout")), 10000));
 
-                    // Hatalı olan yinelenen satır burada kaldırıldı.
                     await Promise.race([ackPromise, timeoutPromise]);
 
                     if (otaShouldResend) {
                         i = windowStartIndex - 1;
                         otaShouldResend = false;
                         chunksSentInWindow = 0;
-                        console.log("NACK received. Resending window starting from chunk " + windowStartIndex);
+                        console.log("NACK received. Resending window...");
                         continue;
                     }
 
