@@ -79,6 +79,15 @@
             background-color: #218838;
         }
 
+        .btn-delete {
+            background-color: #D32F2F !important;
+            /* Koyu, dikkat çekici kırmızı */
+        }
+
+        .btn-delete:hover {
+            background-color: #B71C1C !important;
+        }
+
         .tabs {
             display: flex;
             border-bottom: 1px solid #ddd;
@@ -550,6 +559,20 @@
         </div>
     </div>
 
+    <div id="deleteConfirmModal" class="modal">
+        <div class="modal-content">
+            <h3>Aracı Sil</h3>
+            <p id="deleteModalMessage">Bu aracı kalıcı olarak silmek istediğinizden emin misiniz?</p>
+            <div style="display: flex; gap: 10px; margin-top: 20px;">
+                <button id="cancelDeleteButton" class="btn-secondary" style="flex: 1;">İptal</button>
+                <button id="confirmDeleteButton" class="btn-delete" style="flex: 1;">Evet, Sil</button>
+            </div>
+        </div>
+    </div>
+
+
+    </div>
+
 
     <script>
         // UUIDs
@@ -629,7 +652,12 @@
             updateConfirmModal: document.getElementById('updateConfirmModal'),
             updateConfirmModalMessage: document.getElementById('updateConfirmModalMessage'),
             confirmUpdateButton: document.getElementById('confirmUpdateButton'),
-            cancelUpdateButton: document.getElementById('cancelUpdateButton')
+            cancelUpdateButton: document.getElementById('cancelUpdateButton'),
+
+            deleteConfirmModal: document.getElementById('deleteConfirmModal'),
+            deleteModalMessage: document.getElementById('deleteModalMessage'),
+            confirmDeleteButton: document.getElementById('confirmDeleteButton'),
+            cancelDeleteButton: document.getElementById('cancelDeleteButton')
 
 
         };
@@ -670,6 +698,26 @@
         ui.cancelUpdateButton.addEventListener('click', () => {
             ui.updateConfirmModal.style.display = 'none'; // Modalı kapat
             resetOtaUi(); // Güncelleme arayüzünü sıfırla
+        });
+
+
+        // <script> etiketi içinde -> Event Listeners bölümüne ekleyin
+
+        ui.cancelDeleteButton.addEventListener('click', () => {
+            ui.deleteConfirmModal.style.display = 'none';
+        });
+
+        ui.confirmDeleteButton.addEventListener('click', async () => {
+            // Butonun veri özelliğinden silinecek MAC adresini al
+            const macToDelete = ui.confirmDeleteButton.dataset.mac;
+
+            if (macToDelete) {
+                const payload = { action: "delete_device", mac: macToDelete };
+                await writeToDeviceMgmtChar(payload);
+            }
+
+            // İşlem sonrası modalı kapat
+            ui.deleteConfirmModal.style.display = 'none';
         });
 
         // --- Core Functions ---
@@ -1042,12 +1090,7 @@
             await writeToDeviceMgmtChar(payload);
         }
 
-        async function deleteDevice(mac) {
-            if (confirm(`MAC Adresi: ${mac}\n\nBu aracı kalıcı olarak silmek istediğinizden emin misiniz?`)) {
-                const payload = { action: "delete_device", mac: mac };
-                await writeToDeviceMgmtChar(payload);
-            }
-        }
+
 
         async function writeToDeviceMgmtChar(payload) {
             try {
@@ -1264,8 +1307,8 @@
                 showToast("Firmware URL'i bulunamadı.", "error");
                 return;
             }
-            
-            
+
+
             isUpdateInProgress = true;
             ui.checkUpdateButton.style.display = 'none'; // "Kontrol Et" butonunu gizle
             ui.startUpdateButton.style.display = 'none'; // "Yükle" butonunu da gizle
@@ -1387,6 +1430,18 @@
             } else {
                 ui.securityWarning.style.display = 'block';
             }
+        }
+
+        // <script> etiketi içinde
+        async function deleteDevice(mac) {
+            // Mesajı, hangi cihazın silineceğini gösterecek şekilde güncelle
+            ui.deleteModalMessage.innerText = `MAC Adresi: ${mac}\n\nBu aracı kalıcı olarak silmek istediğinizden emin misiniz?`;
+
+            // Silinecek olan MAC adresini, onay butonunun bir veri özelliğine ata
+            ui.confirmDeleteButton.dataset.mac = mac;
+
+            // Modalı göster
+            ui.deleteConfirmModal.style.display = 'flex';
         }
 
         function showToast(message, type = "info") {
