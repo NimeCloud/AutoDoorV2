@@ -3,27 +3,27 @@
 import os
 import json
 import shutil
-from SCons.Script import Import
+import hashlib  # <<< YENİ: Hash hesaplama için gerekli kütüphane
+from SCons.Script import Import # type: ignore
 
 # --- Yapılandırma ---
 GITHUB_USER = "NimeCloud"
 REPO_NAME = "GateControlFirmware"
 BRANCH_NAME = "main"
-RELEASE_DIR = "release" 
+RELEASE_DIR = "release"
 # --------------------
 
 Import("env")
 
 # =================================================================
-# Versiyonlama ve İsimlendirme (Doğrudan Çalıştırılan Kısım)
+# Versiyonlama ve İsimlendirme (Bu kısımda değişiklik yok)
 # =================================================================
 print("--- Running Version & Naming Script ---")
 
-# ... (Bu bölümün tamamı önceki mesajdakiyle aynı, değişiklik yok) ...
 version_major_file = 'version_major.txt'
 version_minor_file = 'version_minor.txt'
 version_build_file = 'version_build.txt'
-    
+
 try:
     with open(version_build_file, 'r') as f:
         build_number = int(f.read().strip()) + 1
@@ -58,22 +58,14 @@ with open('src/version.h', 'w') as f:
 print("Generated src/version.h")
 
 new_prog_name = f"gate_firmware_{build_number}"
-env.Replace(PROGNAME=new_prog_name)
+env.Replace(PROGNAME=new_prog_name) # type: ignore
 print(f"PROGNAME set to: {new_prog_name}")
 
-new_bin_url = f"https://raw.githubusercontent.com/{GITHUB_USER}/{REPO_NAME}/{BRANCH_NAME}/{new_prog_name}.bin"
-version_data = {
-    "latest_version": full_version_str,
-    "bin_url": new_bin_url
-}
-with open('version.json', 'w') as f:
-    json.dump(version_data, f, indent=2)
-print("version.json successfully updated.")
 
 # =================================================================
-# Derleme Sonrası Kopyalama Fonksiyonu (GÜNCELLENMİŞ)
+# Derleme Sonrası Kopyalama ve HASH HESAPLAMA (GÜNCELLENMİŞ)
 # =================================================================
-def post_build_copy(source, target, env):
+def post_build_actions(source, target, env):
     prog_name = env.get("PROGNAME")
     project_dir = env.get("PROJECT_DIR")
     
@@ -82,22 +74,42 @@ def post_build_copy(source, target, env):
     if not os.path.exists(release_path):
         os.makedirs(release_path)
 
-    print(f"--- Running Post-Build Copy Script ---")
+    print(f"--- Running Post-Build Actions ---")
     
     # 1. Adım: Firmware (.bin) dosyasını kopyala
-    source_bin_path = str(target[0])
-    dest_bin_path = os.path.join(release_path, f"{prog_name}.bin")
-    print(f"Copying '{source_bin_path}' to '{dest_bin_path}'")
-    shutil.copy(source_bin_path, dest_bin_path)
+    source_firmware_path = str(target[0])
+    dest_firmware_path = os.path.join(release_path, f"{prog_name}.bin")
+    print(f"Copying '{source_firmware_path}' to '{dest_firmware_path}'")
+    shutil.copy(source_firmware_path, dest_firmware_path)
     print("Firmware bin successfully copied to release folder.")
 
-    # --- YENİ EKLENEN KISIM ---
-    # 2. Adım: version.json dosyasını kopyala
-    source_json_path = os.path.join(project_dir, "version.json")
-    dest_json_path = os.path.join(release_path, "version.json")
-    print(f"Copying '{source_json_path}' to '{dest_json_path}'")
-    shutil.copy(source_json_path, dest_json_path)
-    print("version.json successfully copied to release folder.")
+    # --- YENİ EKLENEN KISIM: HASH HESAPLAMA ---
+    # 2. Adım: Kopyalanan .bin dosyasının SHA-256 hash'ini hesapla
+    print(f"Calculating SHA-256 hash for '{dest_firmware_path}'...")
+    sha256_hash = hashlib.sha256()
+    with open(dest_firmware_path, "rb") as f:
+        # Belleği verimli kullanmak için dosyayı parçalar halinde oku
+        for byte_block in iter(lambda: f.read(4096), b""):
+            sha256_hash.update(byte_block)
+    firmware_hash_str = sha256_hash.hexdigest()
+    print(f"Calculated Hash: {firmware_hash_str}")
+    # --- BİTİŞ ---
+
+    # --- YENİ EKLENEN KISIM: version.json GÜNCELLEME ---
+    # 3. Adım: version.json dosyasını oluştur ve hash'i ekle
+    new_firmware_url = f"https://raw.githubusercontent.com/{GITHUB_USER}/{REPO_NAME}/{BRANCH_NAME}/{RELEASE_DIR}/{prog_name}.bin"
+    version_data = {
+        "latest_version": full_version_str,
+        "firmware_url": new_firmware_url,
+        "firmware_hash": firmware_hash_str  # Hash değerini ekle
+    }
+    
+    # Hem proje ana dizinine hem de release klasörüne kaydet
+    for path in [project_dir, release_path]:
+        dest_json_path = os.path.join(path, "version.json")
+        with open(dest_json_path, 'w') as f:
+            json.dump(version_data, f, indent=4)
+        print(f"version.json successfully created/updated at '{dest_json_path}'.")
     # --- BİTİŞ ---
 
     print("--------------------------------------")
@@ -106,4 +118,4 @@ def post_build_copy(source, target, env):
 # =================================================================
 # Kopyalama Eylemini PlatformIO'ya Tanımlama
 # =================================================================
-env.AddPostAction("$BUILD_DIR/${PROGNAME}.bin", post_build_copy)
+env.AddPostAction("$BUILD_DIR/${PROGNAME}.bin", post_build_actions) # type: ignore

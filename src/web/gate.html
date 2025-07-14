@@ -1364,15 +1364,19 @@
 
                 const versionInfo = await response.json();
                 const latestVersion = versionInfo.latest_version;
-                firmwareBinUrl = versionInfo.bin_url;
+                firmwareBinUrl = versionInfo.firmware_url;
+                window.expectedFirmwareHash = versionInfo.firmware_hash;
 
 
 
-                if (!latestVersion) {
-                    showToast("Güncelleme sunucusundan geçersiz versiyon bilgisi alındı.", "error");
+
+                if (!latestVersion || !firmwareBinUrl || !window.expectedFirmwareHash) { // Hash'in varlığını da kontrol et
+                    showToast("Güncelleme sunucusundan eksik bilgi alındı.", "error");
                     ui.checkUpdateButton.disabled = false;
                     return;
                 }
+
+
 
                 // Yeni karşılaştırma fonksiyonunu kullan
                 const comparisonResult = compareVersions(currentVersion, latestVersion);
@@ -1420,6 +1424,12 @@
                 return;
             }
 
+            const expectedHash = window.expectedFirmwareHash;
+            if (!expectedHash) {
+                showToast("Firmware hash bilgisi bulunamadı. Lütfen güncellemeyi yeniden kontrol edin.", "error");
+                return;
+            }
+
 
             isUpdateInProgress = true;
             ui.checkUpdateButton.style.display = 'none'; // "Kontrol Et" butonunu gizle
@@ -1432,8 +1442,25 @@
                 if (!response.ok) throw new Error(`Download failed: ${response.statusText}`);
                 const firmwareBinary = await response.arrayBuffer();
 
-                showToast("Cihaz hazırlanıyor...", "info");
-                const startCommand = { command: "start", size: firmwareBinary.byteLength };
+                showToast("Dosya bütünlüğü doğrulanıyor...", "info");
+                const calculatedHash = await calculateSha256(firmwareBinary);
+
+                console.log("Sunucudan Gelen Hash: ", expectedHash);
+                console.log("Hesaplanan Hash:     ", calculatedHash);
+
+                if (calculatedHash.toLowerCase() !== expectedHash.toLowerCase()) {
+                    // Hash'ler uyuşmuyorsa işlemi durdur!
+                    throw new Error("HASH UYUŞMAZLIĞI! İndirilen dosya bozuk veya yanlış.");
+                }
+
+                showToast("Doğrulama başarılı. Cihaz hazırlanıyor...", "success");
+
+
+                const startCommand = {
+                    command: "start",
+                    size: firmwareBinary.byteLength,
+                    hash: calculatedHash // Doğrulanan hash'i komuta ekle
+                };
 
                 // Cihazdan "ota_ready" ve mevcut ilerleme bilgisini bekle
                 const readyPromise = new Promise(resolve => { otaReadyPromiseResolver = resolve; });
@@ -1573,51 +1600,51 @@
         }
 
         async function sendRebootCommand() {
-    // --- BÖLÜM 1: ARAYÜZ GÜNCELLEMELERİ (ANINDA ÇALIŞIR) ---
+            // --- BÖLÜM 1: ARAYÜZ GÜNCELLEMELERİ (ANINDA ÇALIŞIR) ---
 
-    // 1. Bayrağı ve buton rengini hemen sıfırla
-    isRebootRequired = false;
-    updateRebootButtonState();
+            // 1. Bayrağı ve buton rengini hemen sıfırla
+            isRebootRequired = false;
+            updateRebootButtonState();
 
-    // 2. Geri sayım modalını hemen göster
-    let countdown = 3;
-    showModal({
-        title: "Cihaz Yeniden Başlatılıyor",
-        message: `Sayfa <strong>${countdown}</strong> saniye içinde yenilenecek...`,
-        buttons: [] // Buton olmasın
-    });
+            // 2. Geri sayım modalını hemen göster
+            let countdown = 3;
+            showModal({
+                title: "Cihaz Yeniden Başlatılıyor",
+                message: `Sayfa <strong>${countdown}</strong> saniye içinde yenilenecek...`,
+                buttons: [] // Buton olmasın
+            });
 
-    // 3. Geri sayım sayacını hemen başlat
-    const modalMessageEl = document.getElementById('universalModalMessage');
-    const countdownInterval = setInterval(() => {
-        countdown--;
-        if (countdown > 0) {
-            modalMessageEl.innerHTML = `Sayfa <strong>${countdown}</strong> saniye içinde yenilenecek...`;
-        } else {
-            clearInterval(countdownInterval);
-            modalMessageEl.innerHTML = "Şimdi yenileniyor...";
-            setTimeout(() => {
-                location.reload();
+            // 3. Geri sayım sayacını hemen başlat
+            const modalMessageEl = document.getElementById('universalModalMessage');
+            const countdownInterval = setInterval(() => {
+                countdown--;
+                if (countdown > 0) {
+                    modalMessageEl.innerHTML = `Sayfa <strong>${countdown}</strong> saniye içinde yenilenecek...`;
+                } else {
+                    clearInterval(countdownInterval);
+                    modalMessageEl.innerHTML = "Şimdi yenileniyor...";
+                    setTimeout(() => {
+                        location.reload();
+                    }, 1000);
+                }
             }, 1000);
-        }
-    }, 1000);
 
-    // --- BÖLÜM 2: BLUETOOTH KOMUTU (ARKA PLANDA ÇALIŞIR) ---
+            // --- BÖLÜM 2: BLUETOOTH KOMUTU (ARKA PLANDA ÇALIŞIR) ---
 
-    // 4. Komutu "beklemeden" gönder. Arayüzümüz zaten çalışıyor.
-    const rebootCommand = { command: "reboot" };
-    try {
-        if (bleDevice && bleDevice.gatt.connected && otaControlCharacteristic) {
-            // DİKKAT: Bu satırın başında 'await' YOK.
-            // Bu sayede komut gönderilir ve kod akışı anında devam eder.
-            otaControlCharacteristic.writeValue(new TextEncoder().encode(JSON.stringify(rebootCommand)));
+            // 4. Komutu "beklemeden" gönder. Arayüzümüz zaten çalışıyor.
+            const rebootCommand = { command: "reboot" };
+            try {
+                if (bleDevice && bleDevice.gatt.connected && otaControlCharacteristic) {
+                    // DİKKAT: Bu satırın başında 'await' YOK.
+                    // Bu sayede komut gönderilir ve kod akışı anında devam eder.
+                    otaControlCharacteristic.writeValue(new TextEncoder().encode(JSON.stringify(rebootCommand)));
+                }
+            } catch (error) {
+                // Bu hata bloğu sadece komut gönderilirken anlık bir sorun olursa çalışır.
+                // Cihazın bağlantısının kopması beklenen bir durum olduğu için sorun teşkil etmez.
+                console.log("Reboot command sent. Ignoring expected disconnection error:", error.name);
+            }
         }
-    } catch (error) {
-        // Bu hata bloğu sadece komut gönderilirken anlık bir sorun olursa çalışır.
-        // Cihazın bağlantısının kopması beklenen bir durum olduğu için sorun teşkil etmez.
-        console.log("Reboot command sent. Ignoring expected disconnection error:", error.name);
-    }
-}
 
         function updateRebootButtonState() {
             if (isRebootRequired) {
@@ -1734,6 +1761,16 @@
             }
             return (crc ^ (-1)) >>> 0;
         };
+
+        // Bu yardımcı fonksiyonu <script> etiketinin içine ekleyin
+        async function calculateSha256(buffer) {
+            // Tarayıcının yerleşik kripto API'sini kullanarak hash hesapla
+            const hashBuffer = await crypto.subtle.digest('SHA-256', buffer);
+            // Byte dizisini hex string formatına çevir
+            const hashArray = Array.from(new Uint8Array(hashBuffer));
+            const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+            return hashHex;
+        }
 
 
     </script>

@@ -2,6 +2,8 @@
 #include "common.cpp"
 #include <Update.h>
 
+#include "driver/ledc.h"
+
 // Key: Araç MAC adresi (String), Value: Gönderilen Nonce (String)
 std::map<String, String> challengeNonces;
 // Key: Araç MAC adresi (String), Value: Yetkinin sona ereceği zaman (millis())
@@ -31,6 +33,7 @@ const unsigned long AUTH_DURATION_MS = 300000; // 5 dakika yetki süresi
 #define AUTH_BUTTON_PIN 0 // Yetkilendirme/Tarama butonu
 #define LED_ON HIGH
 #define LED_OFF LOW
+
 #endif
 
 // Sabitler
@@ -441,42 +444,64 @@ class OtaControlCallbacks : public BLECharacteristicCallbacks
         return;
       }
 
-      if (ota_progress > 0)
+      ota_total_size = doc["size"];
+      String receivedHash = doc["hash"].as<String>();
+
+      if (ota_progress == 0) // Fresh update
       {
-        last_ack_window_id = ota_resume_window_id; // BLE yeniden bağlanırsa kaldığı yerden devam et
+        logMessage("Fresh update started. Writing session hash to NVS.", 0, settings.logLevel);
+
+        // Yeni oturum için NVS'e yeni hash'i yaz
+        preferences.begin("ota_state", false);
+        preferences.putString("ota_hash", receivedHash);
+        preferences.end();
+
+        if (!Update.begin(ota_total_size))
+        {
+
+          logMessage("OTA Error: Not enough space or partition error. Error: " + String(Update.errorString()), 0, settings.logLevel);
+          sendUpdateStatus("Yetersiz alan veya bölümleme hatası.", "error", false);
+
+          return;
+        }
       }
-      else
+      else if (ota_progress > 0) // Resume update
       {
-        last_ack_window_id = 0; // Tam yeni bir OTA ise
+        logMessage("Checked NVS for resume. Progress found: " + String(ota_progress) + " bytes.", 0, settings.logLevel);
+        logMessage("Verifying session hash...", 0, settings.logLevel);
+
+        preferences.begin("ota_state", true); // Sadece okumak için aç
+        String storedHash = preferences.getString("ota_hash", "");
+        preferences.end();
+
+        // Hash uyuşmazlığı varsa, oturumu sıfırla ve yeni olarak başlat
+        if (storedHash.isEmpty() || receivedHash != storedHash)
+        {
+          logMessage("HASH MISMATCH! Firmware changed mid-session. Starting fresh.", 0, settings.logLevel);
+
+          Update.abort();
+          ota_progress = 0;
+
+          preferences.begin("ota_state", false);
+          preferences.putString("ota_hash", receivedHash); // Yeni hash'i yaz
+          preferences.end();
+
+          if (!Update.begin(ota_total_size))
+          {
+            logMessage("OTA Error: Not enough space for fresh start.", 0, settings.logLevel);
+            return;
+          }
+        }
+        else
+        {
+          logMessage("Session hashes match. Resuming update.", 0, settings.logLevel);
+        }
       }
 
       last_ack_sent_time = 0;
-
-      if (ota_progress > 0)
-      {
-        logMessage("Checked NVS for resume. Progress found: " + String(ota_progress) + " bytes.", 0, settings.logLevel);
-      }
-
-      ota_total_size = doc["size"];
-
-      // Sadece ve sadece güncelleme en başından başlıyorsa Update.begin() çağır.
-      if (ota_progress == 0)
-      {
-        logMessage("This is a fresh update. Starting OTA process...", 0, settings.logLevel);
-        if (!Update.begin(ota_total_size))
-        {
-          logMessage("OTA Error: Not enough space or partition error. Error: " + String(Update.errorString()), 0, settings.logLevel);
-          sendUpdateStatus("Yetersiz alan veya bölümleme hatası.", "error", false);
-          return; // Hata varsa devam etme
-        }
-      }
-      else
-      {
-        logMessage("This is a resumed update. Skipping Update.begin().", 0, settings.logLevel);
-        // Devam eden bir güncelleme için Update.begin() tekrar çağrılmaz.
-      }
-
       isUpdateInProgress = true;
+      last_ack_window_id = ota_resume_window_id;
+
       if (pStatusChar)
       {
         JsonDocument readyDoc;
@@ -490,46 +515,38 @@ class OtaControlCallbacks : public BLECharacteristicCallbacks
       }
       logMessage("OTA Ready. Resuming/Starting update from " + String(ota_progress), 0, settings.logLevel);
     }
-    else if (command == "end")
+    else if (command == "end" || command == "abort")
     {
       if (!isUpdateInProgress)
         return;
 
-      // "end" komutu geldiğinde, gerçekten tüm verinin alınıp alınmadığını kontrol et.
-      if (ota_progress != ota_total_size)
+      if (command == "end" && Update.end(true))
       {
-        logMessage("OTA Error: 'end' received but data transfer is incomplete. Expected " + String(ota_total_size) + " but got " + String(ota_progress), 0, settings.logLevel);
-        sendUpdateStatus("Veri aktarımı eksik, işlem iptal edildi.", "error", false);
-        Update.abort();
-
-        isUpdateInProgress = false;
-        return; // İşlemi sonlandır
-      }
-
-      // Güncelleme başarılı ise, ilerlemeyi sıfırla
-      isUpdateInProgress = false;
-
-      if (Update.end(true))
-      {
-        ota_progress = 0; // Güncelleme başarılı ise ilerlemeyi sıfırla
-
-        logMessage("OTA successful. Cleared saved progress.", 0, settings.logLevel);
+        logMessage("OTA successful! Clearing session state.", 0, settings.logLevel);
         sendUpdateStatus("Güncelleme başarılı! Yeniden başlatmak için onay bekleniyor.", "success", true);
+      }
+      else if (command == "end")
+      {
+        logMessage("OTA Error on Update.end(): " + String(Update.errorString()), 0, settings.logLevel);
+        sendUpdateStatus("Doğrulama hatası: " + String(Update.errorString()), "error", false);
       }
       else
       {
-        logMessage("OTA Error on Update.end(). Error: " + String(Update.errorString()), 0, settings.logLevel);
-        sendUpdateStatus("Doğrulama hatası: " + String(Update.errorString()), "error", false);
+        Update.abort();
+        logMessage("OTA Aborted by client. Clearing session state.", 0, settings.logLevel);
       }
-    }
-    else if (command == "abort")
-    {
-      isUpdateInProgress = false;
-      Update.abort();
-      ota_progress = 0; // İptal edildiğinde ilerlemeyi sıfırla
 
-      logMessage("OTA Aborted by client. Cleared saved progress.", 0, settings.logLevel);
+      // OTURUMU BİTİR: RAM ve NVS'i temizle
+      isUpdateInProgress = false;
+      ota_progress = 0;
+      ota_resume_window_id = 0;
+      last_ack_window_id = 0;
+
+      preferences.begin("ota_state", false);
+      preferences.remove("ota_hash"); // Oturum hash'ini NVS'ten sil
+      preferences.end();
     }
+    // --- REBOOT KOMUTU ---
     else if (command == "reboot")
     {
       logMessage("Reboot command received. Restarting device.", 0, settings.logLevel);
@@ -1637,11 +1654,28 @@ void setupSimple()
 
   Serial.println("Setup tamamlandi.");
 }
+void generateTone(int pin, int frequency, int duration)
+{
+  long toggleDelay = 1000000 / (frequency * 2); // Mikro saniye cinsinden gecikme
+  long numToggles = (long)frequency * duration / 1000;
 
+  for (long i = 0; i < numToggles; i++)
+  {
+    digitalWrite(pin, HIGH);
+    delayMicroseconds(toggleDelay);
+    digitalWrite(pin, LOW);
+    delayMicroseconds(toggleDelay);
+  }
+}
 void setup()
 {
   Serial.begin(115200);
   Serial.println();
+
+  // Buzzer pinini ayarlayın
+  pinMode(BUZZER_PIN, OUTPUT);
+  digitalWrite(BUZZER_PIN, BUZZER_OFF); // Başlangıçta buzzer kapalı
+  generateTone(BUZZER_PIN, 1000, 200);  // 1000 Hz (1kHz) frekansta 200 milisaniye bip sesi
 
   logMessage("Gate Control System Starting...", 0, settings.logLevel);
 
