@@ -1356,7 +1356,15 @@
                 // Önbelleği atlamak için parametre ekliyoruz.
                 // Bu, sunucunun her zaman en güncel dosyayı göndermesini sağlar.
                 const cacheBustedUrl = `${url}?_=${new Date().getTime()}`;
-                const response = await fetch(cacheBustedUrl, { cache: 'no-cache' }); // Ek güvenlik için no-cache de ekledik
+                const response = await fetch(cacheBustedUrl, {
+                    method: 'GET',
+                    cache: 'no-cache', // Tarayıcıya önbelleği kullanmamasını söyler
+                    headers: {
+                        'Cache-Control': 'no-cache',
+                        'Pragma': 'no-cache',
+                        'Expires': '0',
+                    },
+                });
 
                 if (!response.ok) {
                     throw new Error(`Sunucu hatası! Status: ${response.status}`);
