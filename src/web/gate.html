@@ -405,6 +405,45 @@
             font-weight: bold;
             cursor: pointer;
         }
+
+
+        /* <style> etiketinin içine, mevcut kuralların sonuna ekleyebilirsiniz */
+
+        /* Genel olarak TÜM devre dışı butonlar için temel stil */
+        /* Bu, normal mavi butonların ve diğerlerinin gri görünmesini sağlar */
+        button:disabled {
+            background-color: #cccccc;
+            /* Soluk gri */
+            color: #666666;
+            /* Koyu gri yazı */
+            cursor: not-allowed;
+            /* "İzin verilmiyor" imleci */
+            opacity: 0.65;
+            /* Butonu soluklaştırarak pasif olduğunu belli eder */
+        }
+
+        /* Renkli butonların devre dışı halleri için özel kurallar */
+        /* Bu, kırmızı butonun soluk kırmızı, yeşilin soluk yeşil olmasını sağlar */
+        /* !important kullanarak diğer stilleri ezdiğinden emin oluruz */
+
+        button.btn-delete:disabled {
+            background-color: #f48fb1 !important;
+            /* Soluk kırmızı */
+            opacity: 0.7;
+        }
+
+        button.btn-success:disabled {
+            background-color: #a5d6a7 !important;
+            /* Soluk yeşil */
+            opacity: 0.7;
+        }
+
+        /* İkincil butonlar için de bir kural ekleyelim */
+        button.btn-secondary:disabled {
+            background-color: #adb5bd !important;
+            /* Soluk ikincil renk */
+            opacity: 0.7;
+        }
     </style>
 </head>
 
@@ -534,7 +573,11 @@
 
             </div>
 
-            <button id="disconnectButton" style="background-color:#6c757d; margin-top: 20px;">Bağlantıyı Kes</button>
+
+            <button id="rebootDeviceButton" class="btn-secondary" style="margin-top: 20px;">Cihazı Yeniden
+                Başlat</button>
+            <button id="disconnectButton" style="background-color:#6c757d; margin-top: 10px;">Bağlantıyı Kes</button>
+
         </div>
     </div>
     <div id="toast" class="toast"></div>
@@ -571,6 +614,15 @@
     </div>
 
 
+    <div id="universalModal" class="modal">
+        <div class="modal-content">
+            <h3 id="universalModalTitle"></h3>
+            <p id="universalModalMessage" style="white-space: pre-wrap;"></p>
+            <div id="universalModalButtons" style="display: flex; gap: 10px; margin-top: 20px;">
+            </div>
+        </div>
+    </div>
+
     </div>
 
 
@@ -601,6 +653,9 @@
         let otaShouldResend = false;
         let otaReadyPromiseResolver = null;
         let otaCurrentWindowId = 0;
+
+        let isRebootRequired = false; // Yeniden başlatma gerekip gerekmediğini takip eder
+
 
 
 
@@ -690,15 +745,8 @@
             setTimeout(() => onDisconnected(false), 2000);
         });
 
-        ui.confirmUpdateButton.addEventListener('click', () => {
-            ui.updateConfirmModal.style.display = 'none'; // Modalı kapat
-            startFirmwareUpdate(); // Güncelleme işlemini başlat
-        });
-
-        ui.cancelUpdateButton.addEventListener('click', () => {
-            ui.updateConfirmModal.style.display = 'none'; // Modalı kapat
-            resetOtaUi(); // Güncelleme arayüzünü sıfırla
-        });
+        
+        
 
 
         // <script> etiketi içinde -> Event Listeners bölümüne ekleyin
@@ -719,6 +767,10 @@
             // İşlem sonrası modalı kapat
             ui.deleteConfirmModal.style.display = 'none';
         });
+
+        ui.rebootDeviceButton.addEventListener('click', sendRebootCommand);
+
+
 
         // --- Core Functions ---
 
@@ -896,14 +948,40 @@
                         break;
 
                     case 'update_status':
-                        if (data.reboot) { // Bu bayrak artık 'başarılı' anlamına geliyor
-                            ui.successModal.querySelector('#successModalMessage').innerText = data.message;
-                            ui.successModal.style.display = 'flex';
+                        if (data.reboot) { // Başarılı güncelleme
+                            isRebootRequired = true;
+                            updateRebootButtonState(); // Butonu kırmızı yap
+                            showModal({
+                                title: "İşlem Başarılı!",
+                                message: data.message,
+                                buttons: [
+                                    { text: "Cihazı Yeniden Başlat", class: "btn-success", onClick: sendRebootCommand }
+                                ]
+                            });
                         } else {
                             showToast(data.message, data.type || 'info');
                         }
                         break;
-
+                    case 'reboot_required':
+                        // 1. Kalıcı yeniden başlatma bayrağını ayarla
+                        isRebootRequired = true;
+                        // 2. Arka plandaki ana butonu hemen kırmızı yap
+                        updateRebootButtonState();
+                        // 3. Kullanıcıya nedenini açıklayan bir modal göster
+                        showModal({
+                            title: "Yeniden Başlatma Gerekli",
+                            message: data.reason || "Yapılan bazı değişikliklerin etkili olması için cihazın yeniden başlatılması gerekiyor.",
+                            buttons: [
+                                { text: "Daha Sonra", class: "btn-secondary" }, // Bu buton sadece modalı kapatır
+                                {
+                                    text: "Şimdi Yeniden Başlat",
+                                    delay: 3,
+                                    class: "btn-delete", // Kırmızı ve dikkat çekici
+                                    onClick: sendRebootCommand // Daha önce yazdığımız yeniden başlatma fonksiyonunu çağır
+                                }
+                            ]
+                        });
+                        break;
 
                     // Buraya gelecekte başka event'ler eklenebilir
                 }
@@ -1105,6 +1183,8 @@
 
         async function readGateSettings() {
             try {
+
+
                 const value = await settingsCharacteristic.readValue();
                 const settings = JSON.parse(new TextDecoder().decode(value));
                 if (settings.error) {
@@ -1112,6 +1192,10 @@
                     showScreen('pinScreen');
                     return;
                 }
+
+                const deviceName = settings.deviceName || 'GATE';
+
+
                 ui.gateDeviceNameInput.value = settings.deviceName || '';
                 ui.closeTimeoutSlider.value = settings.closeTimeout || 30;
                 ui.closeTimeoutValue.innerText = settings.closeTimeout || 30;
@@ -1152,10 +1236,11 @@
             }
         }
 
-        // <script> etiketi içinde -> writeGateSettings fonksiyonunu bununla değiştirin
+        // gate-admin-panel.html -> Bu fonksiyonu mevcut olanla tamamen değiştirin
         async function writeGateSettings() {
             try {
-                const payload = {
+                // 1. Önce, PIN dışındaki tüm ayarları bir nesnede topla
+                const settingsPayload = {
                     deviceName: ui.gateDeviceNameInput.value,
                     closeTimeout: parseInt(ui.closeTimeoutSlider.value, 10),
                     preCloseWarning: parseInt(ui.preCloseWarningSlider.value, 10),
@@ -1163,54 +1248,73 @@
                     authReq: ui.authRequiredCheckbox.checked
                 };
 
-                // --- YENİ VE SADELEŞTİRİLMİŞ PIN YÖNETİM MANTIĞI ---
 
-                // Sadece ve sadece kullanıcı PIN metin kutusuna dokunup onu değiştirdiyse
-                // PIN ile ilgili bir işlem yap.
-                if (isPinInputModified) {
-                    const newPin = ui.newPinInput.value;
 
-                    // Durum 1: Kullanıcı kutuyu boş bıraktı (PIN'i silmek istiyor)
-                    if (newPin.length === 0) {
-                        // Sadece cihazda gerçekten silinecek bir PIN varsa onay iste
-                        if (deviceHasPin) {
-                            if (confirm("Mevcut PIN'i kalıcı olarak silmek istediğinizden emin misiniz?")) {
-                                payload.pinCode = ""; // Silme komutunu payload'a ekle
-                            } else {
-                                readGateSettings(); // Kullanıcı vazgeçti, arayüzü eski haline getir
-                                return; // Tüm işlemi durdur
-                            }
-                        }
-                        // Zaten PIN yoksa ve kutu boşsa hiçbir şey yapmaya gerek yok.
-                    }
-                    // Durum 2: Kullanıcı yeni bir PIN girdi
-                    else {
-                        // Yeni PIN'in 4 haneli bir sayı olup olmadığını kontrol et
-                        if (newPin.length !== 4 || !/^\d+$/.test(newPin)) {
-                            showToast("Yeni PIN 4 haneli bir sayı olmalıdır!", "error");
-                            return; // Geçersizse işlemi durdur
-                        }
-                        payload.pinCode = newPin; // Yeni PIN'i payload'a ekle
-                    }
+
+                // 2. Eğer kullanıcı PIN kutusuna hiç dokunmadıysa, sadece bu ayarları gönder ve çık.
+                if (!isPinInputModified) {
+                    await settingsCharacteristic.writeValue(new TextEncoder().encode(JSON.stringify(settingsPayload)));
+                    showToast("Ayarlar kaydedildi.", "success");
+                    updateRebootButtonState();
+
+                    setTimeout(readGateSettings, 1500);
+                    return;
                 }
-                // Eğer kullanıcı PIN kutusuna hiç dokunmadıysa (isPinInputModified == false ise),
-                // payload'a pinCode alanı hiç eklenmez ve mevcut PIN güvende kalır.
 
-                // Ayarları cihaza gönder
-                await settingsCharacteristic.writeValue(new TextEncoder().encode(JSON.stringify(payload)));
+                // 3. Eğer PIN kutusu değiştirildiyse...
+                const newPin = ui.newPinInput.value;
 
-                showToast("Ayarlar cihaza gönderiliyor...", "info");
+                // Senaryo A: PIN silinmek isteniyor (kutu boş bırakıldı)
+                if (newPin.length === 0) {
+                    if (deviceHasPin) {
+                        showModal({
+                            title: "PIN Silme Onayı",
+                            message: "Mevcut PIN'i kalıcı olarak silmek istediğinizden emin misiniz?",
+                            buttons: [
+                                { text: "İptal", class: "btn-secondary" },
+                                {
+                                    text: "Evet, Sil",
+                                    class: "btn-delete",
+                                    delay: 3,
+                                    onClick: async () => {
+                                        // <<< DÜZELTME BURADA >>>
+                                        // Sadece PIN'i silen bir payload oluşturmak yerine,
+                                        // ana ayarlarla PIN silme komutunu birleştiriyoruz.
+                                        const fullPayload = { ...settingsPayload, pinCode: "" };
+                                        await settingsCharacteristic.writeValue(new TextEncoder().encode(JSON.stringify(fullPayload)));
 
-                // İşlem sonrası arayüzü ve bayrakları temizle
-                ui.newPinInput.value = '';
-                isPinInputModified = false;
+                                        showToast("PIN başarıyla silindi ve diğer ayarlar kaydedildi.", "success");
+                                        isPinInputModified = false;
+                                        setTimeout(readGateSettings, 1500);
+                                    }
+                                }
+                            ]
+                        });
+                    }
+                    // Zaten PIN yoksa ve kutu boş bırakıldıysa bir şey yapmaya gerek yok.
+                }
+                // Senaryo B: Yeni bir PIN ayarlanıyor
+                else {
+                    if (newPin.length !== 4 || !/^\d+$/.test(newPin)) {
+                        showToast("Yeni PIN 4 haneli bir sayı olmalıdır!", "error");
+                        return;
+                    }
+                    // Hem normal ayarları hem de yeni PIN'i birleştir ve gönder.
+                    const fullPayload = { ...settingsPayload, pinCode: newPin };
+                    await settingsCharacteristic.writeValue(new TextEncoder().encode(JSON.stringify(fullPayload)));
 
-                // Cihazdaki ayarların son halini okuyarak arayüzü yenile
-                setTimeout(readGateSettings, 1500);
+                    showToast("Ayarlar ve yeni PIN kaydedildi.", "success");
+                    isPinInputModified = false;
+                    setTimeout(readGateSettings, 1500);
+                }
 
             } catch (error) {
                 console.error("Gate ayarları kaydedilemedi:", error);
                 showToast("Ayarlar kaydedilemedi.", "error");
+            }
+
+            if (isRebootRequired) {
+                updateRebootButtonState();
             }
         }
 
@@ -1256,6 +1360,9 @@
 
                 const versionInfo = await response.json();
                 const latestVersion = versionInfo.latest_version;
+                firmwareBinUrl = versionInfo.bin_url;
+
+                
 
                 if (!latestVersion) {
                     showToast("Güncelleme sunucusundan geçersiz versiyon bilgisi alındı.", "error");
@@ -1267,16 +1374,14 @@
                 const comparisonResult = compareVersions(currentVersion, latestVersion);
 
                 if (true || comparisonResult === -1) { // -1 demek: currentVersion < latestVersion
-                    showToast(`Yeni versiyon bulundu: ${latestVersion}`, "success");
-                    firmwareBinUrl = versionInfo.bin_url;
-                    newFirmwareVersion = latestVersion;
-
-                    // Native confirm() yerine kendi modalımızı gösteriyoruz
-                    ui.updateConfirmModalMessage.innerHTML = `Mevcut Versiyon: <b>${currentVersion}</b><br>Yeni Versiyon: <b>${latestVersion}</b><br><br>Güncellemeyi başlatmak için onaylayın.`;
-                    ui.updateConfirmModal.style.display = 'flex';
-
-                    //ui.checkUpdateButton.style.display = 'none';
-                    //ui.startUpdateButton.style.display = 'block';
+                    showModal({
+                        title: "Yeni Güncelleme Bulundu!",
+                        message: `Mevcut Versiyon: <b>${currentVersion}</b><br>Yeni Versiyon: <b>${latestVersion}</b><br><br>Güncellemeyi başlatmak için onaylayın.`,
+                        buttons: [
+                            { text: "İptal", class: "btn-secondary", onClick: resetOtaUi },
+                            { text: "Onayla ve Yükle", class: "btn-success", onClick: startFirmwareUpdate }
+                        ]
+                    });
 
 
                 } else if (comparisonResult === 1) { // 1 demek: currentVersion > latestVersion
@@ -1303,6 +1408,9 @@
         // gate-admin-panel.html -> <script> etiketi içindeki bu fonksiyonu güncelleyin
 
         async function startFirmwareUpdate() {
+
+           
+
             if (!firmwareBinUrl) {
                 showToast("Firmware URL'i bulunamadı.", "error");
                 return;
@@ -1432,16 +1540,47 @@
             }
         }
 
-        // <script> etiketi içinde
+
         async function deleteDevice(mac) {
-            // Mesajı, hangi cihazın silineceğini gösterecek şekilde güncelle
-            ui.deleteModalMessage.innerText = `MAC Adresi: ${mac}\n\nBu aracı kalıcı olarak silmek istediğinizden emin misiniz?`;
+            showModal({
+                title: "Cihaz Silme Onayı",
+                message: `MAC Adresi: <b>${mac}</b><br><br>Bu aracı kalıcı olarak silmek istediğinizden emin misiniz?`,
+                buttons: [
+                    { text: "İptal", class: "btn-secondary" },
+                    {
+                        text: "Evet, Sil",
+                        class: "btn-delete",
+                        onClick: async () => {
+                            const payload = { action: "delete_device", mac: mac };
+                            await writeToDeviceMgmtChar(payload);
+                        }
+                    }
+                ]
+            });
+        }
 
-            // Silinecek olan MAC adresini, onay butonunun bir veri özelliğine ata
-            ui.confirmDeleteButton.dataset.mac = mac;
+        async function sendRebootCommand() {
+            const rebootCommand = { command: "reboot" };
+            try {
+                await otaControlCharacteristic.writeValue(new TextEncoder().encode(JSON.stringify(rebootCommand)));
+            } catch (error) {
+                console.log("Ignoring expected error on reboot command:", error.name);
+            }
+            showToast("Cihaz yeniden başlatılıyor...", "info");
+            // Cihaz yeniden başlayacağı için bağlantının kopmasını bekliyoruz
+            setTimeout(() => onDisconnected(false), 2000);
+        }
 
-            // Modalı göster
-            ui.deleteConfirmModal.style.display = 'flex';
+        function updateRebootButtonState() {
+            if (isRebootRequired) {
+                // Yeniden başlatma GEREKLİ ise, butonu kırmızı yap
+                ui.rebootDeviceButton.classList.remove('btn-secondary');
+                ui.rebootDeviceButton.classList.add('btn-delete'); // Kırmızı stil için mevcut class'ı kullanalım
+            } else {
+                // Yeniden başlatma gerekli DEĞİLSE, butonu normal gri yap
+                ui.rebootDeviceButton.classList.remove('btn-delete');
+                ui.rebootDeviceButton.classList.add('btn-secondary');
+            }
         }
 
         function showToast(message, type = "info") {
@@ -1452,6 +1591,79 @@
             if (toastTimeout) clearTimeout(toastTimeout);
             toastTimeout = setTimeout(() => { toast.style.display = 'none'; }, 3000);
         }
+
+
+        // <script> etiketi içine ekleyin
+
+        // Evrensel modalı yöneten ana fonksiyon
+        function showModal(options) {
+            const {
+                title,
+                message,
+                buttons = [], // Varsayılan olarak boş buton dizisi
+                autoClose = 0 // Varsayılan olarak otomatik kapanma yok
+            } = options;
+
+            const modal = document.getElementById('universalModal');
+            const titleEl = document.getElementById('universalModalTitle');
+            const messageEl = document.getElementById('universalModalMessage');
+            const buttonsEl = document.getElementById('universalModalButtons');
+
+            // İçeriği temizle ve doldur
+            titleEl.innerText = title;
+            messageEl.innerHTML = message; // HTML içeriğine izin vermek için .innerHTML kullanıyoruz
+            buttonsEl.innerHTML = ''; // Önceki butonları temizle
+
+            // Butonları oluştur
+            if (buttons.length > 0) {
+                buttons.forEach(btnInfo => {
+                    const button = document.createElement('button');
+                    button.innerText = btnInfo.text;
+                    button.className = btnInfo.class || 'btn-secondary'; // Varsayılan stil
+                    button.style.flex = 1;
+
+                    const originalText = btnInfo.text;
+
+                    // Eğer butonda gecikme varsa...
+                    if (btnInfo.delay && btnInfo.delay > 0) {
+                        button.disabled = true;
+                        let countdown = btnInfo.delay;
+                        button.innerText = `${originalText} (${countdown})`;
+
+                        const interval = setInterval(() => {
+                            countdown--;
+                            button.innerText = `${originalText} (${countdown})`;
+                            if (countdown <= 0) {
+                                clearInterval(interval);
+                                button.innerText = originalText;
+                                button.disabled = false;
+                            }
+                        }, 1000);
+                    }
+
+                    button.onclick = () => {
+                        modal.style.display = 'none'; // Butona tıklanınca modalı her zaman kapat
+                        if (btnInfo.onClick) {
+                            btnInfo.onClick(); // Butonun özel eylemini çalıştır
+                        }
+                    };
+                    buttonsEl.appendChild(button);
+                });
+            }
+
+            // Modalı göster
+            modal.style.display = 'flex';
+
+            // Eğer otomatik kapanma süresi varsa...
+            if (autoClose > 0) {
+                setTimeout(() => {
+                    modal.style.display = 'none';
+                }, autoClose * 1000);
+            }
+        }
+
+
+
 
         // CRC32 hesaplama fonksiyonu ve tablosu
         const crc32Table = (() => {

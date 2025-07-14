@@ -450,7 +450,6 @@ class OtaControlCallbacks : public BLECharacteristicCallbacks
         last_ack_window_id = 0; // Tam yeni bir OTA ise
       }
 
-
       last_ack_sent_time = 0;
 
       if (ota_progress > 0)
@@ -533,7 +532,7 @@ class OtaControlCallbacks : public BLECharacteristicCallbacks
     else if (command == "reboot")
     {
       logMessage("Reboot command received. Restarting device.", 0, settings.logLevel);
-      delay(100);
+      delay(100); 
       ESP.restart();
     }
   }
@@ -1411,6 +1410,11 @@ class SettingsCharacteristicCallbacks : public BLECharacteristicCallbacks
     jsonDoc["updateUrl"] = settings.updateUrl;
     jsonDoc["firmwareVersion"] = getFirmwareVersion();
 
+    // Reboot required durumunu oku
+    preferences.begin("gate-settings", true);
+    jsonDoc["rebootRequired"] = preferences.getBool("rebootRequired", false);
+    preferences.end();
+
     // 3. JSON'u Panele Gönder
     String jsonString;
     serializeJson(jsonDoc, jsonString);
@@ -1445,6 +1449,7 @@ class SettingsCharacteristicCallbacks : public BLECharacteristicCallbacks
 
     logMessage("Received new settings via BLE. Processing...", 1, settings.logLevel);
     bool anyChangeDetected = false;
+    bool deviceNameChanged = false;
 
     // 3. Ayarları Tek Tek Kontrol Et ve Güncelle
 
@@ -1458,6 +1463,8 @@ class SettingsCharacteristicCallbacks : public BLECharacteristicCallbacks
         strlcpy(settings.deviceName, newDeviceName.c_str(), sizeof(settings.deviceName));
         logMessage("Setting updated: deviceName -> " + newDeviceName, 0, settings.logLevel);
         anyChangeDetected = true;
+        isDeviceNameChanged = true;
+        deviceNameChanged = true;
       }
     }
 
@@ -1505,6 +1512,28 @@ class SettingsCharacteristicCallbacks : public BLECharacteristicCallbacks
         isAuthenticated = false; // PIN changed, require re-authentication for security
         logMessage("Setting updated: PIN has been changed. Re-authentication required.", 0, settings.logLevel);
         anyChangeDetected = true;
+      }
+    }
+
+    if (deviceNameChanged)
+    {
+
+      // deviceNameChanged = false; // Sadece bir kez bildirim gönder
+
+      preferences.begin("gate-settings", false); // "gate-settings" alanını yazmak için aç
+      preferences.putBool("rebootRequired", true);
+      preferences.end();
+      delay(100);
+
+      if (pStatusChar)
+      {
+        JsonDocument rebootDoc;
+        rebootDoc["event"] = "reboot_required";
+        rebootDoc["reason"] = "Cihaz adının BLE üzerinde tam olarak güncellenmesi için yeniden başlatma gereklidir.";
+        String output;
+        serializeJson(rebootDoc, output);
+        pStatusChar->setValue(output.c_str());
+        pStatusChar->notify();
       }
     }
 
@@ -1638,6 +1667,17 @@ void setup()
   delay(2000);
   digitalWrite(INTERNAL_LED_PIN, LED_OFF);
   delay(1000);
+
+  // Reset reboot required flag
+  preferences.begin("gate-settings", false);
+  if (preferences.getBool("rebootRequired", false))
+  {
+    logMessage("Reboot requirement flag found. Clearing it now.", 0, settings.logLevel);
+    preferences.putBool("rebootRequired", false);
+  }
+  preferences.end();
+
+  delay(100);
 
   // Ayarları ve kayıtlı mac id'leri yükle
   loadSettings();
