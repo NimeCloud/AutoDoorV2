@@ -119,7 +119,7 @@ bool preCloseWarnLogged = false;                // Kapanmadan önce uyarı mesaj
 bool autoClosePostponedLoggedOnce = false;      // Otomatik kapanmanın ertelendiğinin bir kez loglandığını gösterir
 bool isSettingsChanged = false;                 // Ayarların değişip değişmediğini kontrol eden bayrak
 unsigned long lastSettingsChangeTime = 0;       // Ayarların en son değiştiği zaman
-const unsigned long SETTINGS_SAVE_DELAY = 5000; // Ayarları kaydetmek için bekleme süresi (ms)
+const unsigned long SETTINGS_SAVE_DELAY = 2000; // Ayarları kaydetmek için bekleme süresi (ms)
 bool isDeviceNameChanged = false;               // Cihaz adının değişip değişmediğini kontrol eden bayrak
 bool shouldBeep = false;                        // Motor hareket halindeyken bip sesini kontrol eder
 
@@ -482,6 +482,7 @@ class OtaControlCallbacks : public BLECharacteristicCallbacks
         JsonDocument readyDoc;
         readyDoc["event"] = "ota_ready";
         readyDoc["progress"] = ota_progress; // NVS'ten gelen güncel ilerlemeyi gönder
+        readyDoc["windowId"] = ota_resume_window_id;
         String output;
         serializeJson(readyDoc, output);
         pStatusChar->setValue(output.c_str());
@@ -532,7 +533,7 @@ class OtaControlCallbacks : public BLECharacteristicCallbacks
     else if (command == "reboot")
     {
       logMessage("Reboot command received. Restarting device.", 0, settings.logLevel);
-      delay(100); 
+      delay(100);
       ESP.restart();
     }
   }
@@ -620,8 +621,6 @@ class OtaDataCallbacks : public BLECharacteristicCallbacks
     if (ota_packets_received_in_window >= OTA_PACKET_WINDOW_SIZE || ota_progress == ota_total_size)
     {
 
-      last_ack_window_id++; // Her yeni ACK için pencere numarasını artır
-      ota_resume_window_id = last_ack_window_id;
       should_send_ota_ack = true;
       ota_packets_received_in_window = 0;
       last_ack_sent_time = 0; // Tekrar gönderim sayacını sıfırla
@@ -1872,35 +1871,26 @@ void loop()
     should_send_ota_ack = true; // Tekrar göndermeyi tetikle
   }
 
-  // --- MEVCUT ACK GÖNDERME MANTIĞI (GÜNCELLENMİŞ) ---
   if (should_send_ota_ack)
   {
     if (pStatusChar)
     {
       JsonDocument ackDoc;
       ackDoc["event"] = "ota_ack";
-      ackDoc["id"] = last_ack_window_id; // Pencere numarasını ekle
+      // Send the ID of the window we just received.
+      ackDoc["id"] = last_ack_window_id;
       String output;
       serializeJson(ackDoc, output);
       pStatusChar->setValue(output.c_str());
       pStatusChar->notify();
     }
-    last_ack_sent_time = millis(); // ACK gönderim zamanını kaydet
-    should_send_ota_ack = false;
-  }
+    last_ack_sent_time = millis();
+    should_send_ota_ack = false; // Clear the flag.
 
-  if (should_send_ota_ack)
-  {
-    if (pStatusChar)
-    {
-      JsonDocument ackDoc;
-      ackDoc["event"] = "ota_ack";
-      String output;
-      serializeJson(ackDoc, output);
-      pStatusChar->setValue(output.c_str());
-      pStatusChar->notify();
-    }
-    should_send_ota_ack = false; // Bayrağı sıfırla
+    // NOW, increment the ID to prepare for the NEXT window.
+    last_ack_window_id++;
+    // And save this new ID as the point to resume from.
+    ota_resume_window_id = last_ack_window_id;
   }
 
   // --- Başlangıçta Otomatik Tarama Tetikleyicisi ---

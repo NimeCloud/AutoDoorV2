@@ -745,8 +745,8 @@
             setTimeout(() => onDisconnected(false), 2000);
         });
 
-        
-        
+
+
 
 
         // <script> etiketi içinde -> Event Listeners bölümüne ekleyin
@@ -833,6 +833,10 @@
                         break;
 
                     case 'ota_ready':
+                        if (data.window !== undefined) {
+                            otaCurrentWindowId = data.window;
+                            console.log(`🚀 OTA resume window ID cihazdan alındı: ${otaCurrentWindowId}`);
+                        }
                         if (otaReadyPromiseResolver) {
                             otaReadyPromiseResolver(data.progress); // Mevcut ilerlemeyi ilet
                         }
@@ -1362,7 +1366,7 @@
                 const latestVersion = versionInfo.latest_version;
                 firmwareBinUrl = versionInfo.bin_url;
 
-                
+
 
                 if (!latestVersion) {
                     showToast("Güncelleme sunucusundan geçersiz versiyon bilgisi alındı.", "error");
@@ -1409,7 +1413,7 @@
 
         async function startFirmwareUpdate() {
 
-           
+
 
             if (!firmwareBinUrl) {
                 showToast("Firmware URL'i bulunamadı.", "error");
@@ -1466,6 +1470,14 @@
 
             otaCurrentWindowId = Math.floor(startChunk / windowSize);
 
+            const totalWindows = Math.ceil(totalChunks / windowSize);
+            console.log(`🚀 OTA DEBUG:
+    Firmware size: ${firmwareBinary.byteLength} bytes
+    Chunk size: ${otaChunkSize}
+    Window size: ${otaWindowSize}
+    Total chunks: ${totalChunks}
+    Total windows: ${totalWindows}`);
+
 
             for (let i = startChunk; i < totalChunks; i++) {
                 if (!isUpdateInProgress) {
@@ -1489,7 +1501,7 @@
                 await new Promise(resolve => setTimeout(resolve, 5));
 
                 if (chunksSentInWindow >= windowSize && i < totalChunks - 1) {
-                    otaCurrentWindowId++; // Bir sonraki pencere için beklenen ID'yi artır
+
 
                     console.log(`Window sent (${chunksSentInWindow} chunks). Waiting for ACK...`);
                     const ackPromise = new Promise(resolve => { otaAckPromiseResolver = resolve; });
@@ -1507,6 +1519,7 @@
 
                     console.log("ACK Received. Continuing...");
                     windowStartIndex = i + 1;
+                    otaCurrentWindowId++; // Bir sonraki pencere için beklenen ID'yi artır
                     chunksSentInWindow = 0;
                 }
             }
@@ -1560,16 +1573,51 @@
         }
 
         async function sendRebootCommand() {
-            const rebootCommand = { command: "reboot" };
-            try {
-                await otaControlCharacteristic.writeValue(new TextEncoder().encode(JSON.stringify(rebootCommand)));
-            } catch (error) {
-                console.log("Ignoring expected error on reboot command:", error.name);
-            }
-            showToast("Cihaz yeniden başlatılıyor...", "info");
-            // Cihaz yeniden başlayacağı için bağlantının kopmasını bekliyoruz
-            setTimeout(() => onDisconnected(false), 2000);
+    // --- BÖLÜM 1: ARAYÜZ GÜNCELLEMELERİ (ANINDA ÇALIŞIR) ---
+
+    // 1. Bayrağı ve buton rengini hemen sıfırla
+    isRebootRequired = false;
+    updateRebootButtonState();
+
+    // 2. Geri sayım modalını hemen göster
+    let countdown = 3;
+    showModal({
+        title: "Cihaz Yeniden Başlatılıyor",
+        message: `Sayfa <strong>${countdown}</strong> saniye içinde yenilenecek...`,
+        buttons: [] // Buton olmasın
+    });
+
+    // 3. Geri sayım sayacını hemen başlat
+    const modalMessageEl = document.getElementById('universalModalMessage');
+    const countdownInterval = setInterval(() => {
+        countdown--;
+        if (countdown > 0) {
+            modalMessageEl.innerHTML = `Sayfa <strong>${countdown}</strong> saniye içinde yenilenecek...`;
+        } else {
+            clearInterval(countdownInterval);
+            modalMessageEl.innerHTML = "Şimdi yenileniyor...";
+            setTimeout(() => {
+                location.reload();
+            }, 1000);
         }
+    }, 1000);
+
+    // --- BÖLÜM 2: BLUETOOTH KOMUTU (ARKA PLANDA ÇALIŞIR) ---
+
+    // 4. Komutu "beklemeden" gönder. Arayüzümüz zaten çalışıyor.
+    const rebootCommand = { command: "reboot" };
+    try {
+        if (bleDevice && bleDevice.gatt.connected && otaControlCharacteristic) {
+            // DİKKAT: Bu satırın başında 'await' YOK.
+            // Bu sayede komut gönderilir ve kod akışı anında devam eder.
+            otaControlCharacteristic.writeValue(new TextEncoder().encode(JSON.stringify(rebootCommand)));
+        }
+    } catch (error) {
+        // Bu hata bloğu sadece komut gönderilirken anlık bir sorun olursa çalışır.
+        // Cihazın bağlantısının kopması beklenen bir durum olduğu için sorun teşkil etmez.
+        console.log("Reboot command sent. Ignoring expected disconnection error:", error.name);
+    }
+}
 
         function updateRebootButtonState() {
             if (isRebootRequired) {
