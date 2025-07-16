@@ -98,6 +98,9 @@ def post_build_actions(source, target, env):
     # --- YENİ EKLENEN KISIM: version.json GÜNCELLEME ---
     # 3. Adım: version.json dosyasını oluştur ve hash'i ekle
     new_firmware_url = f"https://raw.githubusercontent.com/{GITHUB_USER}/{REPO_NAME}/{BRANCH_NAME}/{RELEASE_DIR}/{prog_name}.bin"
+    new_firmware_url = f"https://api.github.com/repos/{GITHUB_USER}/{REPO_NAME}/contents/{prog_name}.bin?ref={BRANCH_NAME}"
+
+
     version_data = {
         "latest_version": full_version_str,
         "firmware_url": new_firmware_url,

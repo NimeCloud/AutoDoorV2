@@ -43,15 +43,13 @@ git add .
 echo - Tum degisiklikler eklendi (git add .).
 
 REM 2. Adım: Otomatik build numarası ile commit yap
-REM Commit mesajini dogrudan ve tek tirnak icinde belirtmek daha guvenli olabilir.
 git commit -m "Build %BUILD_NUM%"
 echo - Degisiklikler commit edildi. Mesaj: "Release Build %BUILD_NUM% surumu yayinlandi."
 
-REM --- YENİ EKLENEN ADIM ---
 REM 3. Adım: Değişiklikleri göndermeden önce sunucudaki son durumu çek (pull)
 echo - Sunucudaki degisiklikler cekiliyor (git pull)...
 git pull origin main
-if errorlevel 1 (
+if %errorlevel% neq 0 (
     echo HATA: 'git pull' basarisiz oldu. Muhtemelen bir 'merge conflict' (birleştirme çakışması) var.
     echo Lutfen durumu manuel olarak VS Code veya Git Bash uzerinden cozun.
     pause

@@ -559,7 +559,8 @@
                 <div class="input-group" style="display: none;">
                     <label for="updateUrlInput">Update URL:</label>
                     <input type="url" id="updateUrlInput"
-                        value="https://raw.githubusercontent.com/NimeCloud/GateControlFirmware/main/version.json">
+                        valueEX="https://raw.githubusercontent.com/NimeCloud/GateControlFirmware/main/version.json"
+                        value="https://api.github.com/repos/NimeCloud/GateControlFirmware/contents/version.json">
                 </div>
 
                 <div id="otaUpdateContainer">
@@ -1355,16 +1356,17 @@
             try {
                 // Önbelleği atlamak için parametre ekliyoruz.
                 // Bu, sunucunun her zaman en güncel dosyayı göndermesini sağlar.
-                const cacheBustedUrl = `${url}?_=${new Date().getTime()}`;
+                const cacheBustedUrl = `${url}?t=${new Date().getTime()}`;
+
                 const response = await fetch(cacheBustedUrl, {
-                    method: 'GET',
-                    cache: 'no-cache', // Tarayıcıya önbelleği kullanmamasını söyler
                     headers: {
-                        'Cache-Control': 'no-cache',
-                        'Pragma': 'no-cache',
-                        'Expires': '0',
-                    },
+                        "Accept": "application/vnd.github.v3.raw"
+                    }
                 });
+
+
+
+
 
                 if (!response.ok) {
                     throw new Error(`Sunucu hatası! Status: ${response.status}`);
@@ -1446,7 +1448,13 @@
 
             try {
                 showToast("Firmware indiriliyor...", "info");
-                const response = await fetch(`${firmwareBinUrl}?v=${new Date().getTime()}`);
+
+                const response = await fetch(firmwareBinUrl, {
+                    headers: {
+                        "Accept": "application/vnd.github.v3.raw"
+                    }
+                });
+
                 if (!response.ok) throw new Error(`Download failed: ${response.statusText}`);
                 const firmwareBinary = await response.arrayBuffer();
 
