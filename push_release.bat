@@ -1,14 +1,13 @@
-
-:: Change drive & path
-cd /D %~dp0
-
 @echo off
 REM Komut penceresinin Türkçe karakterleri doğru göstermesi için kod sayfasını ayarla
 chcp 65001 > nul
 
-REM --- KULLANICI AYARI: LÜTFEN BU YOLU KENDİ BİLGİSAYARINIZA GÖRE DÜZENLEYİN ---
+:: Script'in bulunduğu dizine geç
+cd /D %~dp0
+
+REM --- KULLANICI AYARI ---
 set "BUILD_NUM_FILE_PATH=E:\_CODE_\AutoDoorV2\version_build.txt"
-REM ---------------------------------------------------------------------------
+REM ---------------------
 
 echo.
 echo ===========================================
@@ -16,61 +15,28 @@ echo == GateControl Firmware Release Gonderici ==
 echo ===========================================
 echo.
 
-REM Build numarası dosyasının var olup olmadığını kontrol et
-if not exist "%BUILD_NUM_FILE_PATH%" (
-    echo HATA: Build numarasi dosyasi bulunamadi!
-    echo Lutfen script icindeki yolu kontrol edin:
-    echo %BUILD_NUM_FILE_PATH%
-    pause
-    exit /b
-)
-
-REM Dosyanın ilk satırını okuyup BUILD_NUM değişkenine ata
-set /p BUILD_NUM=<"%BUILD_NUM_FILE_PATH%"
-
-echo Bulunan en guncel build numarasi: %BUILD_NUM%
-echo.
-echo Git islemleri baslatiliyor...
-echo.
-
-REM 1. Adım: Klasördeki tüm yeni/değişmiş dosyaları Git'e ekle
-git add .
-echo - Tum degisiklikler eklendi (git add .).
-
-REM 2. Adım: Otomatik build numarası ile commit yap
-git commit -m "Build %BUILD_NUM%"
-if errorlevel 1 (
-    echo UYARI: Commit basarisiz oldu. Muhtemelen commit edilecek yeni bir degisiklik yok. Devam ediliyor...
-) else (
-    echo - Degisiklikler commit edildi. Mesaj: "Build %BUILD_NUM%"
-)
-
-REM --- YENI EKLENEN ADIM ---
-REM 3. Adım: Değişiklikleri göndermeden önce sunucudaki son durumu çek (pull)
-echo - Sunucudaki degisiklikler cekiliyor (git pull)...
+echo --- 1. Adim: Sunucudaki degisiklikler cekiliyor (pull)...
 git pull origin main
-if errorlevel 1 (
-    echo HATA: 'git pull' basarisiz oldu. Muhtemelen bir 'merge conflict' (birleştirme çakışması) var.
-    echo Lutfen durumu manuel olarak VS Code veya Git Bash uzerinden cozun.
-    pause
-    exit /b
-)
-echo - Depo basariyla guncellendi.
+echo.
 
-REM 4. Adım: Değişiklikleri GitHub'a gönder (push)
-echo - Degisiklikler GitHub'a gonderiliyor (git push)...
+echo --- 2. Adim: Yerel degisiklikler Git'e ekleniyor (add)...
+git add .
+echo.
+
+echo --- 3. Adim: Degisiklikler paketleniyor (commit)...
+REM Build numarasini dosyadan oku
+set /p BUILD_NUM=<"%BUILD_NUM_FILE_PATH%"
+REM Not: Eger commit edilecek bir sey yoksa, bu komut sadece bir uyari mesaji basar ama script durmaz.
+git commit -m "Build %BUILD_NUM%"
+echo.
+
+echo --- 4. Adim: Tum yerel commit'ler sunucuya gonderiliyor (push)...
 git push origin main
-if errorlevel 1 (
-    echo HATA: 'git push' basarisiz oldu.
-    pause
-    exit /b
-)
-echo - Degisiklikler GitHub'a gonderildi.
 echo.
+
 echo ===========================================
-echo == Islem basariyla tamamlandi!           ==
+echo == Islem Tamamlandi!                     ==
 echo ===========================================
 echo.
 
-REM Pencerenin hemen kapanmaması için bekle
 pause
