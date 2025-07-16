@@ -1,3 +1,4 @@
+
 :: Change drive & path
 cd /D %~dp0
 
@@ -6,14 +7,8 @@ REM Komut penceresinin Türkçe karakterleri doğru göstermesi için kod sayfas
 chcp 65001 > nul
 
 REM --- KULLANICI AYARI: LÜTFEN BU YOLU KENDİ BİLGİSAYARINIZA GÖRE DÜZENLEYİN ---
-REM
-REM Bu, build numarasının tutuldugu .txt dosyasinin tam yoludur.
-REM Private projenizin olduğu yerdeki version_number.txt dosyasını göstermeli.
 set "BUILD_NUM_FILE_PATH=E:\_CODE_\AutoDoorV2\version_build.txt"
 REM ---------------------------------------------------------------------------
-
-
-cd release
 
 echo.
 echo ===========================================
@@ -43,11 +38,14 @@ git add .
 echo - Tum degisiklikler eklendi (git add .).
 
 REM 2. Adım: Otomatik build numarası ile commit yap
-REM Commit mesajini dogrudan ve tek tirnak icinde belirtmek daha guvenli olabilir.
 git commit -m "Build %BUILD_NUM%"
-echo - Degisiklikler commit edildi. Mesaj: "Release Build %BUILD_NUM% surumu yayinlandi."
+if errorlevel 1 (
+    echo UYARI: Commit basarisiz oldu. Muhtemelen commit edilecek yeni bir degisiklik yok. Devam ediliyor...
+) else (
+    echo - Degisiklikler commit edildi. Mesaj: "Build %BUILD_NUM%"
+)
 
-REM --- YENİ EKLENEN ADIM ---
+REM --- YENI EKLENEN ADIM ---
 REM 3. Adım: Değişiklikleri göndermeden önce sunucudaki son durumu çek (pull)
 echo - Sunucudaki degisiklikler cekiliyor (git pull)...
 git pull origin main
@@ -60,8 +58,14 @@ if errorlevel 1 (
 echo - Depo basariyla guncellendi.
 
 REM 4. Adım: Değişiklikleri GitHub'a gönder (push)
+echo - Degisiklikler GitHub'a gonderiliyor (git push)...
 git push origin main
-echo - Degisiklikler GitHub'a gonderildi (git push).
+if errorlevel 1 (
+    echo HATA: 'git push' basarisiz oldu.
+    pause
+    exit /b
+)
+echo - Degisiklikler GitHub'a gonderildi.
 echo.
 echo ===========================================
 echo == Islem basariyla tamamlandi!           ==
