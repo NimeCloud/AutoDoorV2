@@ -134,7 +134,7 @@ const int OTA_CHUNK_SIZE = 500;        // Paket boyutu (500 byte)
 int last_ota_progress_percent = 0;
 int ota_packets_received_in_window = 0;
 volatile bool should_send_ota_ack = false; // volatile, farklı görevler arası kullanım için önemlidir
-volatile uint32_t last_ack_window_id = 0;
+volatile uint32_t last_ack_window_id = -1;
 volatile unsigned long last_ack_sent_time = 0;
 const unsigned long ACK_RESEND_TIMEOUT_MS = 5000; // 5 saniye
 
@@ -154,6 +154,7 @@ bool isUpdateInProgress = false;
 unsigned long ota_progress = 0;
 unsigned long ota_total_size = 0;
 volatile uint32_t ota_resume_window_id = 0;
+String processingHash = "";
 
 // Beacon yayını için zamanlama değişkenleri
 unsigned long lastBeaconTime = 0;
@@ -449,12 +450,9 @@ class OtaControlCallbacks : public BLECharacteristicCallbacks
 
       if (ota_progress == 0) // Fresh update
       {
-        logMessage("Fresh update started. Writing session hash to NVS.", 0, settings.logLevel);
+        logMessage("Fresh update. Storing session hash in RAM.", 0, settings.logLevel);
 
-        // Yeni oturum için NVS'e yeni hash'i yaz
-        preferences.begin("ota_state", false);
-        preferences.putString("ota_hash", receivedHash);
-        preferences.end();
+        processingHash = receivedHash;
 
         if (!Update.begin(ota_total_size))
         {
@@ -464,27 +462,26 @@ class OtaControlCallbacks : public BLECharacteristicCallbacks
 
           return;
         }
+
+        // Sayaçları sıfırla
+        ota_resume_window_id = 0;
+        last_ack_window_id = 0;
       }
-      else if (ota_progress > 0) // Resume update
+      else // Resume
       {
-        logMessage("Checked NVS for resume. Progress found: " + String(ota_progress) + " bytes.", 0, settings.logLevel);
-        logMessage("Verifying session hash...", 0, settings.logLevel);
 
-        preferences.begin("ota_state", true); // Sadece okumak için aç
-        String storedHash = preferences.getString("ota_hash", "");
-        preferences.end();
+        logMessage("Resume detected. Verifying session hash from RAM.", 0, settings.logLevel);
 
-        // Hash uyuşmazlığı varsa, oturumu sıfırla ve yeni olarak başlat
-        if (storedHash.isEmpty() || receivedHash != storedHash)
+        // Panelden gelen hash ile RAM'de tuttuğumuz hash'i karşılaştır.
+        if (processingHash.isEmpty() || receivedHash != processingHash)
         {
           logMessage("HASH MISMATCH! Firmware changed mid-session. Starting fresh.", 0, settings.logLevel);
 
           Update.abort();
           ota_progress = 0;
 
-          preferences.begin("ota_state", false);
-          preferences.putString("ota_hash", receivedHash); // Yeni hash'i yaz
-          preferences.end();
+          // Oturumu sıfırla ve yeni hash ile yeni bir başlangıç yap.
+          processingHash = receivedHash;
 
           if (!Update.begin(ota_total_size))
           {
@@ -496,24 +493,27 @@ class OtaControlCallbacks : public BLECharacteristicCallbacks
         {
           logMessage("Session hashes match. Resuming update.", 0, settings.logLevel);
         }
-      }
 
-      last_ack_sent_time = 0;
-      isUpdateInProgress = true;
+      } // resume
+
+      // Sayaçları ve durumu ayarla
+      uint32_t resume_chunk_index = ota_progress / OTA_CHUNK_SIZE;
+      ota_resume_window_id = resume_chunk_index / OTA_PACKET_WINDOW_SIZE;
       last_ack_window_id = ota_resume_window_id;
+      isUpdateInProgress = true;
+      last_ack_sent_time = 0;
 
       if (pStatusChar)
       {
         JsonDocument readyDoc;
         readyDoc["event"] = "ota_ready";
-        readyDoc["progress"] = ota_progress; // NVS'ten gelen güncel ilerlemeyi gönder
+        readyDoc["progress"] = ota_progress; // Güncel ilerlemeyi gönder
         readyDoc["windowId"] = ota_resume_window_id;
         String output;
         serializeJson(readyDoc, output);
         pStatusChar->setValue(output.c_str());
         pStatusChar->notify();
       }
-      logMessage("OTA Ready. Resuming/Starting update from " + String(ota_progress), 0, settings.logLevel);
     }
     else if (command == "end" || command == "abort")
     {
@@ -541,10 +541,7 @@ class OtaControlCallbacks : public BLECharacteristicCallbacks
       ota_progress = 0;
       ota_resume_window_id = 0;
       last_ack_window_id = 0;
-
-      preferences.begin("ota_state", false);
-      preferences.remove("ota_hash"); // Oturum hash'ini NVS'ten sil
-      preferences.end();
+      processingHash = ""; // Oturum hash'ini temizle
     }
     // --- REBOOT KOMUTU ---
     else if (command == "reboot")
@@ -554,7 +551,6 @@ class OtaControlCallbacks : public BLECharacteristicCallbacks
       ESP.restart();
     }
   }
-
 }; // OtaControlCallbacks
 
 class OtaDataCallbacks : public BLECharacteristicCallbacks
@@ -637,6 +633,10 @@ class OtaDataCallbacks : public BLECharacteristicCallbacks
 
     if (ota_packets_received_in_window >= OTA_PACKET_WINDOW_SIZE || ota_progress == ota_total_size)
     {
+
+      // Sayaç SADECE burada, yeni pencere tamamlandığında artırılmalı.
+      last_ack_window_id++;
+      ota_resume_window_id = last_ack_window_id;
 
       should_send_ota_ack = true;
       ota_packets_received_in_window = 0;
@@ -1920,11 +1920,6 @@ void loop()
     }
     last_ack_sent_time = millis();
     should_send_ota_ack = false; // Clear the flag.
-
-    // NOW, increment the ID to prepare for the NEXT window.
-    last_ack_window_id++;
-    // And save this new ID as the point to resume from.
-    ota_resume_window_id = last_ack_window_id;
   }
 
   // --- Başlangıçta Otomatik Tarama Tetikleyicisi ---

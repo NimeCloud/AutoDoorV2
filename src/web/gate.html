@@ -852,14 +852,16 @@
 
                     case 'ota_ack':
 
-                        // Sadece beklediğimiz pencerenin ACK'i geldiyse devam et
-                        if (data.id === otaCurrentWindowId) {
-                            if (otaAckPromiseResolver) {
-                                otaAckPromiseResolver();
-                                otaAckPromiseResolver = null;
-                            }
+                        if (data.id > otaCurrentWindowId) {
+                            otaCurrentWindowId = data.id;
+                            // console.log(`ACK Received for window ${data.id}.`);
                         } else {
-                            console.log(`Received stray ACK for window ${data.id}, expecting ${otaCurrentWindowId}. Ignoring.`);
+                            // console.log(`Duplicate or old ACK received for window ${data.id}. Ignoring windowId update.`);
+                        }
+
+                        if (otaAckPromiseResolver) {
+                            otaAckPromiseResolver();
+                            otaAckPromiseResolver = null;
                         }
                         break;
 
@@ -1484,10 +1486,16 @@
                 const initialProgress = await readyPromise;
 
                 // 5 paketlik bir geri sarma yap
-                const rewindBytes = 5 * otaChunkSize;
-                let startByte = initialProgress > rewindBytes ? initialProgress - rewindBytes : 0;
+                //const rewindBytes = 5 * otaChunkSize;
+                //let startByte = initialProgress > rewindBytes ? initialProgress - rewindBytes : 0;
 
-                showToast(`Güncellemeye ${Math.round((startByte / firmwareBinary.byteLength) * 100)}% noktasından devam ediliyor...`, "info");
+                // Geri sarma (rewind) mantığını kaldırıyoruz. Güncelleme tam olarak cihazın bildirdiği yerden devam etmeli.
+                let startByte = initialProgress;
+
+                // Eğer bir ilerleme varsa, bunu kullanıcıya bildir.
+                if (startByte > 0) {
+                    showToast(`Güncellemeye ${Math.round((startByte / firmwareBinary.byteLength) * 100)}% noktasından devam ediliyor...`, "info");
+                }
 
                 // Gönderimi geri sarılmış noktadan başlat
                 await sendFirmwareFile(firmwareBinary, startByte);
