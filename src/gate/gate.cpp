@@ -2060,8 +2060,7 @@ void loop()
 
   case AUTH_IDLE:
     // Boşta modundaysak...
-    // VE ÖNEMLİSİ: BİR OTA GÜNCELLEMESİ YAPILMIYORKEN...
-    if (!registeredDevices.empty() && settings.operationMode != MODE_DISABLED)
+    if ((!registeredDevices.empty() || !settings.authorizationRequired) && settings.operationMode != MODE_DISABLED)
     {
       if (currentTime - lastBeaconTime > BEACON_INTERVAL_MS)
       {
