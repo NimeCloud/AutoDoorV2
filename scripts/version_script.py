@@ -11,6 +11,10 @@ GITHUB_USER = "NimeCloud"
 REPO_NAME = "GateControlFirmware"
 BRANCH_NAME = "main"
 RELEASE_DIR = "release"
+# Bu urunun yayin kanali: public depoda gate/ alt klasoru.
+# Depo baska urunlerle paylasildigi icin kok version.json'a YAZILMAZ.
+RELEASE_SUBDIR = "gate"
+PRODUCT = "gate"
 # --------------------
 
 Import("env")
@@ -70,7 +74,7 @@ def post_build_actions(source, target, env):
     project_dir = env.get("PROJECT_DIR")
     
     # Hedef klasörü oluştur (eğer yoksa)
-    release_path = os.path.join(project_dir, RELEASE_DIR)
+    release_path = os.path.join(project_dir, RELEASE_DIR, RELEASE_SUBDIR)
     if not os.path.exists(release_path):
         os.makedirs(release_path)
 
@@ -97,18 +101,19 @@ def post_build_actions(source, target, env):
 
     # --- YENİ EKLENEN KISIM: version.json GÜNCELLEME ---
     # 3. Adım: version.json dosyasını oluştur ve hash'i ekle
-    new_firmware_url = f"https://raw.githubusercontent.com/{GITHUB_USER}/{REPO_NAME}/{BRANCH_NAME}/{RELEASE_DIR}/{prog_name}.bin"
-    new_firmware_url = f"https://api.github.com/repos/{GITHUB_USER}/{REPO_NAME}/contents/{prog_name}.bin?ref={BRANCH_NAME}"
+    # URL, bu urunun kendi alt klasorunu gosterir (depo baska urunlerle paylasiliyor)
+    new_firmware_url = f"https://api.github.com/repos/{GITHUB_USER}/{REPO_NAME}/contents/{RELEASE_SUBDIR}/{prog_name}.bin?ref={BRANCH_NAME}"
 
 
     version_data = {
+        "product": PRODUCT,  # Panel yanlis urunun firmware'ini yuklemeyi reddeder
         "latest_version": full_version_str,
         "firmware_url": new_firmware_url,
         "firmware_hash": firmware_hash_str  # Hash değerini ekle
     }
-    
-    # Hem proje ana dizinine hem de release klasörüne kaydet
-    for path in [project_dir, release_path]:
+
+    # Manifest yalnız bu ürünün kanalına yazılır (proje köküne değil)
+    for path in [release_path]:
         dest_json_path = os.path.join(path, "version.json")
         with open(dest_json_path, 'w') as f:
             json.dump(version_data, f, indent=4)

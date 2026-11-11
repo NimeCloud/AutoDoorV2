@@ -559,8 +559,8 @@
                 <div class="input-group" style="display: none;">
                     <label for="updateUrlInput">Update URL:</label>
                     <input type="url" id="updateUrlInput"
-                        valueEX="https://raw.githubusercontent.com/NimeCloud/GateControlFirmware/main/version.json"
-                        value="https://api.github.com/repos/NimeCloud/GateControlFirmware/contents/version.json">
+                        valueEX="https://raw.githubusercontent.com/NimeCloud/GateControlFirmware/main/gate/version.json"
+                        value="https://api.github.com/repos/NimeCloud/GateControlFirmware/contents/gate/version.json">
                 </div>
 
                 <div id="otaUpdateContainer">
@@ -1375,6 +1375,15 @@
                 }
 
                 const versionInfo = await response.json();
+
+                // Manifest kendini tanıtmalı: yalnız 'gate' ürünü için güncelleme yapılır.
+                // Depo başka ürünlerle paylaşıldığı için yanlış manifest asla yüklemeye dönüşmemeli.
+                if (versionInfo.product !== 'gate') {
+                    showToast(`Bu güncelleme bu cihaza ait değil (manifest ürünü: ${versionInfo.product || 'tanımsız'}). Yükleme teklif edilmedi. Lütfen update adresini kontrol edin.`, "error");
+                    ui.checkUpdateButton.disabled = false;
+                    return;
+                }
+
                 const latestVersion = versionInfo.latest_version;
                 firmwareBinUrl = versionInfo.firmware_url;
                 window.expectedFirmwareHash = versionInfo.firmware_hash;
@@ -1393,7 +1402,7 @@
                 // Yeni karşılaştırma fonksiyonunu kullan
                 const comparisonResult = compareVersions(currentVersion, latestVersion);
 
-                if (true || comparisonResult === -1) { // -1 demek: currentVersion < latestVersion
+                if (comparisonResult === -1) { // -1 demek: currentVersion < latestVersion
                     showModal({
                         title: "Yeni Güncelleme Bulundu!",
                         message: `Mevcut Versiyon: <b>${currentVersion}</b><br>Yeni Versiyon: <b>${latestVersion}</b><br><br>Güncellemeyi başlatmak için onaylayın.`,
