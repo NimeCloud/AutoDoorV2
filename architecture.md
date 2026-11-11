@@ -51,7 +51,7 @@ uygulama katmanındadır.
 | `KEY_DELIVERY` | kapı → araç | `key` | 16 baytlık ortak anahtar, PMK ile XOR'lanmış; 500 ms'de bir, 5 sn boyunca |
 | `KEY_ACK` | araç → kapı | — | Eşleştirme tamam |
 | `BEACON` | kapı → broadcast | `nonce` (yalnız yetkilendirme açıksa) | Boşta 2 sn'de bir |
-| `COMMAND` | araç → kapı | `command` (`WARN` \| `OPEN` \| `CLOSE`), `nonce`, `hmac` | Araç, eşleşmiş kapının beacon'ını görünce |
+| `COMMAND` | araç → kapı | `command` (`WARN` \| `OPEN`), `nonce`, `hmac` | Araç, eşleşmiş kapının beacon'ını görünce |
 
 Komut imzası: `HMAC-SHA256(sharedKey, <araç MAC> + command + nonce)` → hex. `nonce`/`hmac` yalnız güvenli
 modda (beacon `nonce` taşıyorsa) eklenir; taşımıyorsa araç imzasız gönderir ve yetkilendirme açık kapı bunu
@@ -152,9 +152,14 @@ RAM %17,4. En büyük kalemler: Bluedroid BT yığını ~700 KB
 - Cihazda HTTP sunucusu yok; panel erişimi yalnız BLE GATT.
 - ESP-NOW peer'leri şifresizdir; gizlilik/bütünlük uygulama katmanında (XOR anahtar teslimi + HMAC).
 - Komut imzasındaki MAC kaynağı iki tarafta aynı olmak zorunda.
+- İki firmware birbirinin kodunu include etmez; tek paylaşım `src/common.cpp`.
 - `version_script.py` yalnız gate env'inde çalışır; OTA manifesti tek kapı artefaktını tanımlar.
 - Yayın deposunda kök `version.json` bu ürüne ait değildir; kapı yalnız `gate/` alt klasörünü yazar ve
   ürettiği manifestte `"product": "gate"` bulunur. Panel `product` uyuşmayan manifesti reddeder (fail-closed).
-- İki firmware birbirinin kodunu include etmez; tek paylaşım `src/common.cpp`.
+- Kapatma kararı **kapıya aittir**: araçlar yalnız `WARN` (buradayım) ve `OPEN` gönderir; `CLOSE` diye bir
+  protokol komutu yoktur. Sinyal kesilince kapı uyarı penceresini (ışık + buzzer) kendi başlatır.
+- Aynı anda birden çok araç bulunabilir: tek bir "son geçerli komut" zamanı tutulur, **herhangi birinin**
+  taze komutu kapıyı açık tutar; araç başına takip yapılmaz. Bir araç iki kapının menzilindeyse hedefine
+  kilitlenir (`GATE_TARGET_STICKY_MS`), dönüşümlü komut göndermez.
 - Bölüm tablosu değişikliği OTA ile taşınamaz: yeni tablo yalnız seri porttan yazılabilir. Bu yüzden
   bölüm yerleşimi kararları saha dolmadan alınmalıdır.

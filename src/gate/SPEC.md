@@ -29,15 +29,25 @@ ayarlarını, kayıtlı araç listesini, PIN kimlik doğrulamasını ve OTA'yı 
 Ayrı bir FreeRTOS görevi (`stateMachineTask`, core 1) 100 ms'de bir yürütür; LED ayrı görevde (core 0)
 kuyruktan desen tüketir.
 
-- `MODE_NORMAL`: komutlarla çalışır. `GATE_IDLE_OPEN`'tan uyarıya geçiş iki koşuldan biriyle — son geçerli
-  komuttan `closeTimeout` sn geçmesi (sinyal kaybı) ya da durum değişiminden `openLimit` sn geçmesi
-  (güvenlik sınırı). `GATE_WARNING` boyunca kırmızı ışık 1 Hz flaşlar ve buzzer kısa bipler verir;
-  `preCloseWarning` sn sonunda kapı kapanır.
-- Araç menzilde kaldıkça her 2 sn'de `WARN`/`OPEN` gönderdiği için `lastAuthenticatedCommandTime` tazelenir
-  ve kapı açık kalır; araç gidince sayaç dolup uyarı → kapanma başlar.
-- `MODE_FORCE_OPEN`, `MODE_FORCE_CLOSE`, `MODE_DISABLED` komutları yok sayar ve motoru zorlar / durdurur.
+- **Motor süresi**: `GATE_OPENING`/`GATE_CLOSING` durumunda röle sinyali `motorRunMs` (varsayılan 20 000 ms)
+  boyunca aktif kalır, süre dolunca `stopMotor(false)` çağrılır ve durum `GATE_IDLE_OPEN` ya da
+  `GATE_CLOSED`'a ilerler. Bu süre olmadan açılma/kapanma durumlarından çıkış yoktu; kapanma zinciri bu
+  blokla çalışır.
+- **Kapatma kararı kapıya aittir**: araç yalnız `WARN` ve `OPEN` gönderir, `CLOSE` diye bir komut yoktur.
+  `closeTimeout` (varsayılan 30 sn) içinde
+  komut gelmezse kapanma zinciri başlar.
+- `MODE_NORMAL` → `GATE_IDLE_OPEN`: **taze komut** (`lastAuthenticatedCommandTime`, son `closeTimeout`
+  içinde) varsa kapı açık kalır ve `openLimit` kapatmaz (park halindeki araç aç/kapa döngüsü yaratmasın).
+  Taze komut yoksa uyarıya geçiş iki koşuldan biriyle: sinyal kaybı ya da `openLimit` sn güvenlik sınırı.
+  `GATE_WARNING` boyunca kırmızı ışık 1 Hz flaşlar ve buzzer kısa bipler verir; `preCloseWarning` sn
+  sonunda kapı kapanır. Bu uyarı penceresi zorunludur: kapanmayı insan değil kapı başlatır.
+- **Araç başına takip yoktur**: tek bir `lastAuthenticatedCommandTime` tutulur, yani aynı anda birden çok
+  araç varsa **herhangi birinin** taze komutu kapıyı açık tutar. Araç sayısı arttıkça davranış değişmez
+  (özellikle araç başına yetki haritası bilinçli olarak yoktur).
+- `MODE_FORCE_OPEN`, `MODE_FORCE_CLOSE`, `MODE_DISABLED` komutları yok sayar ve motoru zorlar / durdurur;
+  motor süresi bu modlarda da geçerlidir.
 - `OPEN` komutu kapı kapanırken gelirse motor durdurulur, `MOTOR_COOLDOWN_MS` (1 sn) beklenir ve tekrar
-  açılır. `CLOSE` komutu işlenmez — `handleCommand` yalnız `OPEN` ve `WARN` tanır (bilinen kısıt).
+  açılır; uyarı penceresi iptal olur.
 
 ## Eşleştirme ve yetkilendirme
 
@@ -58,10 +68,12 @@ Eşleştirme modu (`AuthMode`): `AUTH_IDLE` / `AUTH_SCANNING` / `AUTH_SENDING_KE
 
 Kapı servisi (`GATE_SERVICE_UUID`) ve karakteristikleri:
 
-- **settings** — okuma JSON'u: `deviceName`, `closeTimeout`, `preCloseWarning`, `openLimit`, `opMode`,
-  `authReq`, `pinExists`, `updateUrl`, `firmwareVersion`, `rebootRequired`. Yazmada aynı anahtarlar;
-  ayrıca `pinCode` alanı varsa PIN değişir ve oturum kimlik doğrulaması düşer. Ad değişikliği
-  `reboot_required` bildirimi üretir. PIN varsa ve oturum doğrulanmadıysa okuma/yazma reddedilir.
+- **settings** — okuma JSON'u: `deviceName`, `closeTimeout`, `preCloseWarning`, `openLimit`,
+  `motorRunMs`, `opMode`, `authReq`, `pinExists`, `updateUrl`, `firmwareVersion`, `rebootRequired`.
+  Yazmada aynı anahtarlar; ayrıca `pinCode` alanı varsa PIN değişir ve oturum kimlik doğrulaması düşer.
+  `motorRunMs` 1 000–120 000 aralığına clamp'lenir; alan gönderilmezse cihaz kendi değerini korur (panel
+  değişikliği gerekmez). Ad değişikliği `reboot_required` bildirimi üretir. PIN varsa ve oturum
+  doğrulanmadıysa okuma/yazma reddedilir.
 - **pin auth** — yazılan ham değer PIN ile karşılaştırılır; cevap `AUTH_SUCCESS` / `AUTH_FAILED` /
   `AUTH_LOCKED`. Okuma `{"pinRequired":bool}`.
 - **status** (notify + `BLE2902`) — olaylar: `ota_config`, `ota_ready`, `ota_progress`, `ota_ack`,
@@ -76,8 +88,8 @@ Ayarlar BLE'den değiştiğinde `SETTINGS_SAVE_DELAY` (2 sn) sonra NVS'e yazıl�
 
 ## Kalıcılık (NVS)
 
-- `gate-settings`: `deviceName`, `closeTimeout`, `preCloseWarn`, `openLimit`, `logLevel`, `authReq`,
-  `opMode`, `pinCode`, `updateUrl`, `rebootRequired`.
+- `gate-settings`: `deviceName`, `closeTimeout`, `preCloseWarn`, `openLimit`, `motorRun`, `logLevel`,
+  `authReq`, `opMode`, `pinCode`, `updateUrl`, `rebootRequired`.
 - `auth_list`: `devices_json` = `[{"mac","key","nickname","vehicleName"}]`.
 - `security`: `fails`, `lock_end`.
 - Varsayılan cihaz adı `GATE_` + eFuse MAC'in son 6 hanesi (büyük harf).
@@ -90,10 +102,14 @@ aktif-LOW'dur. Motor `HIGH` ile sürülür; durdurmada her iki röle de pasiflen
 
 ## Bilinen kısıtlar
 
-- Ölü kod: `challengeNonces`, `authenticatedVehicles`, `stateMachineTask` içindeki hiç çalışmayan
-  `if (false)` eşleştirme zaman aşımı bloğu.
+- Ölü kod: `MyCharacteristicCallbacks` (canlı sınıf `SettingsCharacteristicCallbacks`), `stateMachineTask`
+  içindeki hiç çalışmayan `if (false)` eşleştirme zaman aşımı bloğu.
 - `setup()` içinde `settings.logLevel = 1` zorlaması üretimde ayrıntılı log açar (seri gürültü + rodata).
 - ESP-NOW peer'leri `encrypt = false` olarak eklenir; `KEY_DELIVERY` civarındaki "ESP-NOW bunu PMK ile
   çözer" yorumu yanlıştır — koruma yalnız uygulama katmanındaki XOR'dur. *(doğrulanmadı: bu tasarımın
   bilinçli olduğu kullanıcı tarafından onaylanmadı.)*
 - Komut nonce'u tek kullanımlık değildir; tekrar oynatma engellenmez.
+- BLE oturum yetkisi (`isAuthenticated`) bağlantı başına değil global: aynı anda iki telefon bağlıysa biri
+  PIN girdiğinde diğeri de yetkili sayılır. Teknisyen senaryosu için kabul edildi.
+- `handleCommand` ESP-NOW alım callback'i içinde çalışır; kapanırken `OPEN` gelirse `stopMotor(true)`
+  içindeki 1 sn `vTaskDelay` bu bağlamı bloklar (önceden beri böyle).

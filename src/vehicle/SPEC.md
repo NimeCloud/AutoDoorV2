@@ -32,8 +32,11 @@ gönderdiği ortak anahtarı saklar. Env'ler: `vehicle` (lolin_c3_mini) ve `ekra
   tanımlı ama hiçbir yerde atanmıyor.)
 - Butona 3 sn basış (ya da `FORCE_AUTO_SCAN_ON_STARTUP` açıksa boot + 3 sn) → `VEHICLE_WAITING_FOR_GATE_SCAN`.
   Kapıdan `SCAN_REQUEST` gelince `AUTH_ACK` ile cevap verir, `KEY_DELIVERY`'yi PMK ile çözer, anahtarı
-  `pairedGates`'e yazar ve `VEHICLE_IDLE`'a döner. **Bu moddan çıkışın tek yolu eşleşmedir** — zaman aşımı
-  yoktur (bilinen kısıt).
+  `pairedGates`'e yazar ve `VEHICLE_IDLE`'a döner. Tarama modu `SCAN_DURATION_MS` (5 dk) sonra zaman
+  aşımına uğrar — aynı anda birden fazla araç tarama moduna girse bile hepsi sonsuza kadar beklemez.
+- **Hedef kapı kilitleme**: iki kapı aynı anda menzildeyse araç dönüşümlü komut göndermez. Mevcut
+  hedefin beacon'ı son `GATE_TARGET_STICKY_MS` (5 sn) içinde geldiyse farklı kapıdan gelen beacon yok
+  sayılır; hedef kapı susarsa diğerine geçilir.
 - `DISCOVERY_PROBE` her durumda `{"deviceName": ...}` ile cevaplanır (panel taraması için).
 - Beacon davranışı: eşleşmiş bir kapıdan `BEACON` gelirse `targetGateMac` ve (varsa) `nonce` güncellenir.
   Cihazın açılışından `warnDuration` ms geçmediyse `WARN`, sonrasında `OPEN` gönderilir — yani `warnDuration`
@@ -42,8 +45,8 @@ gönderdiği ortak anahtarı saklar. Env'ler: `vehicle` (lolin_c3_mini) ve `ekra
   gelir ve sürekli `OPEN` gider — panjurun açık kalmasını sağlayan şey budur.
 - Güvenli komut: beacon `nonce` taşıdıysa `HMAC-SHA256(sharedKey, WiFi.macAddress() + command + nonce)` hex
   olarak eklenir; nonce yoksa "güvensiz" gönderilir ve yetkilendirme açık kapı bunu reddeder.
-- Butona kısa basış manuel `OPEN` gönderir; seri porttan `CLOSE` de gönderilebilir ama kapı bu komutu
-  işlemez.
+- Butona kısa basış manuel `OPEN` gönderir. Seri porttan `CLOSE` yazılabiliyor ama bu bir protokol komutu
+  değil: kapı yalnız `WARN`/`OPEN` tanır ve kapanma kararı kapıya aittir (bkz. `gate-firmware`).
 
 ## BLE yüzeyi
 
