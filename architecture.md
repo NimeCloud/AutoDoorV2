@@ -133,12 +133,15 @@ firmware'i cihaza yazabilir.
   `src/version.h` üretir, binary'yi `gate_firmware_<build>` olarak adlandırır, `release/`'e kopyalar,
   SHA-256 hesaplayıp `version.json` yazar. `vehicle`/`ekranli`'de çalıştırılırsa kapının OTA artefaktını ve
   manifestini ezer — bu yüzden bu env'lerde kapalıdır.
-- `custom_partitions.csv`: `app0`/`app1` 0x190000 (1,6 MB), `spiffs` 0xCD000 (820 KB). **SPIFFS hiç
-  kullanılmıyor**; bölüm ayrılmış ama boş duruyor.
+- `custom_partitions.csv` (yalnız `gate`): `app0`/`app1` 0x1F0000 (1 984 KB = 2 031 616 B), artan 64 KB
+  `spiffs`. App bölümleri ESP32'de **0x10000**'e hizalı olmak zorunda olduğu için iki eşit slotun üstü
+  0x1F0000'dir; son 64 KB app'lere verilemez, orada `spiffs` durur (kod SPIFFS kullanmıyor). Eski tablo
+  1,6 MB app + 820 KB `spiffs` ayırıyordu ve imajı %97'ye sıkıştırıyordu.
 
-## Ölçülen flash bütçesi (gate, build 167)
+## Ölçülen flash bütçesi (gate, build 167 kodu / yeni bölüm tablosu)
 
-Toplam 1 596 573 / 1 638 400 bayt (**%97,4**), RAM %17,4. En büyük kalemler: Bluedroid BT yığını ~700 KB
+App bölümü 2 031 616 B; imaj 1 596 573 B → **%78,6**, boş alan ~425 KB (eski tabloda %97,4, boş 40 KB).
+RAM %17,4. En büyük kalemler: Bluedroid BT yığını ~700 KB
 (`libbt.a` 578 + `libbtdm_app` 93 + `libBLE.a` 31), WiFi yığını ~325 KB (`net80211` 107, `lwip` 94,
 `wpa_supplicant` 45, `pp` 37, `phy` 31), `libc` 91 KB, mbedcrypto 40 KB, kendi kodumuz 65 KB, rodata 198 KB.
 `libmesh`, `mbedtls_x509` ve `libsmartconfig` linklenmiyor. Ölçüm `.pio/build/gate/*.map` + `nm` ile yapıldı.
@@ -153,3 +156,5 @@ Toplam 1 596 573 / 1 638 400 bayt (**%97,4**), RAM %17,4. En büyük kalemler: B
 - Yayın deposunda kök `version.json` bu ürüne ait değildir; kapı yalnız `gate/` alt klasörünü yazar ve
   ürettiği manifestte `"product": "gate"` bulunur. Panel `product` uyuşmayan manifesti reddeder (fail-closed).
 - İki firmware birbirinin kodunu include etmez; tek paylaşım `src/common.cpp`.
+- Bölüm tablosu değişikliği OTA ile taşınamaz: yeni tablo yalnız seri porttan yazılabilir. Bu yüzden
+  bölüm yerleşimi kararları saha dolmadan alınmalıdır.

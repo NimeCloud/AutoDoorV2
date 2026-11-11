@@ -58,8 +58,8 @@ gerektirir. Bu üründe panjur, aracın MAC'ine bağlı imzalı komutla açılı
 - **Saha altyapısı bağımsızlığı**: ESP-NOW WiFi radyosunu kullanır ama ağ/altyapı gerektirmez; hiçbir
   çalışma zamanı özelliği sahada WiFi ağı varsaymamalı. Yazılım güncellemesi tarayıcı + public depo
   üzerinden yapılır.
-- **Flash dar boğazı**: kapı imajı 1,6 MB app bölümünün ~%97'sini dolduruyor; yeni özellik eklemek boyut
-  kısıtıyla birlikte değerlendirilir.
+- **Flash kısıtı**: kapı imajı 1 984 KB'lık app bölümünün ~%79'unu dolduruyor (~425 KB boş). Sınır
+  artık engelleyici değil; yine de yeni özellik eklerken boyut hesaba katılır.
 - **Güvenlik hedefi** *(doğrulanmadı — kullanıcı onaylamadı)*: korunulan tehdit uzaktan saldırgan değil,
   yetkisiz/rastgele bir cihazın kapıyı açmasıdır. PMK firmware'e gömülüdür ve ESP-NOW donanım şifrelemesi
   kullanılmaz; gizlilik/bütünlük uygulama katmanında (anahtar tesliminde XOR, komutlarda HMAC) sağlanır.
