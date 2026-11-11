@@ -4,11 +4,9 @@
 
 #include "driver/ledc.h"
 
-// Key: Araç MAC adresi (String), Value: Gönderilen Nonce (String)
-std::map<String, String> challengeNonces;
-// Key: Araç MAC adresi (String), Value: Yetkinin sona ereceği zaman (millis())
-std::map<String, unsigned long> authenticatedVehicles;
-const unsigned long AUTH_DURATION_MS = 300000; // 5 dakika yetki süresi
+// Not: araç başına yetki/nonce takibi YOK. Tek kapı için "son geçerli komut"
+// (lastAuthenticatedCommandTime) semantiği yeterlidir: birden fazla araç varsa herhangi birinin
+// komutu kapıyı açık tutar, araç sayısı arttıkça davranış değişmez. Bkz. src/gate/SPEC.md.
 
 // Otomatik board tespiti
 #if CONFIG_IDF_TARGET_ESP32C3
@@ -39,6 +37,11 @@ const unsigned long AUTH_DURATION_MS = 300000; // 5 dakika yetki süresi
 // Sabitler
 #define FIXED_WIFI_CHANNEL 6   // WiFi kanalı (1, 6 veya 11 önerilir)
 #define MOTOR_COOLDOWN_MS 1000 // 1 saniye motor koruma süresi
+// Motor röle sinyali bu süre boyunca aktif kalır, sonra bırakılır (bkz. stateMachineTask).
+// Panelden "motorRunMs" alanıyla ayarlanabilir; NVS anahtarı "motorRun".
+#define DEFAULT_MOTOR_RUN_MS 20000
+#define MIN_MOTOR_RUN_MS 1000
+#define MAX_MOTOR_RUN_MS 120000
 #define LIGHT_OFF LOW
 #define LIGHT_ON HIGH
 #define BUZZER_ON HIGH
@@ -100,6 +103,7 @@ struct DeviceSettings
   int closeTimeout;    // Otomatik kapanma süresi (saniye)
   int preCloseWarning;
   int openLimit;              // Açık kalma süresi sınırı (saniye) - güvenlik için
+  int motorRunMs;             // Motor röle sinyalinin süresi (ms)
   int logLevel;               // 0 = INFO, 1 = VERBOSE
   bool authorizationRequired; // Yetkilendirme gerekliliği
   GateOperationMode operationMode;
@@ -257,7 +261,8 @@ void printSettingsToSerial()
   // Zamanlama ayarları
   logMessage("Auto-close Timeout (Signal Loss): " + String(settings.closeTimeout) + "s", 0, settings.logLevel);
   logMessage("Pre-close Warning: " + String(settings.preCloseWarning) + "s", 0, settings.logLevel);
-  logMessage("Motor Run Limit: " + String(settings.openLimit) + "s", 0, settings.logLevel);
+  logMessage("Open Limit (max open time): " + String(settings.openLimit) + "s", 0, settings.logLevel);
+  logMessage("Motor Run Time: " + String(settings.motorRunMs) + "ms", 0, settings.logLevel);
 
   // Diğer ayarlar
   logMessage("Log Level: " + String(settings.logLevel == 0 ? "INFO" : "VERBOSE"), 0, settings.logLevel);
@@ -283,6 +288,12 @@ void loadSettings()
   settings.preCloseWarning = preferences.getInt("preCloseWarn", 5);
 
   settings.openLimit = preferences.getInt("openLimit", 300);
+
+  settings.motorRunMs = preferences.getInt("motorRun", DEFAULT_MOTOR_RUN_MS);
+  if (settings.motorRunMs < MIN_MOTOR_RUN_MS || settings.motorRunMs > MAX_MOTOR_RUN_MS)
+  {
+    settings.motorRunMs = DEFAULT_MOTOR_RUN_MS;
+  }
   settings.logLevel = preferences.getInt("logLevel", DEFAULT_LOG_LEVEL_INFO);
   settings.authorizationRequired = preferences.getBool("authReq", true);
 
@@ -304,6 +315,7 @@ void saveSettings()
   preferences.putInt("preCloseWarn", settings.preCloseWarning);
 
   preferences.putInt("openLimit", settings.openLimit);
+  preferences.putInt("motorRun", settings.motorRunMs);
   preferences.putInt("logLevel", settings.logLevel);
   preferences.putBool("authReq", settings.authorizationRequired);
 
@@ -987,20 +999,28 @@ void stateMachineTask(void *pvParameters)
       switch (currentState)
       {
       case GATE_IDLE_OPEN:
-        // Sinyal kaybı veya openLimit zaman aşımlarını burada kontrol et
-        if ((lastAuthenticatedCommandTime > 0 && (currentTime - lastAuthenticatedCommandTime > (settings.closeTimeout * 1000UL))) ||
-            (currentTime - stateChangeTime >= (settings.openLimit * 1000UL)))
-        {
+      {
+        // Kapı, TAZE komut geldiği sürece açık kalır: birden fazla araç varsa herhangi birinin
+        // komutu yeterlidir. Taze komut varken openLimit kapatmaz — aksi halde park halindeki araç
+        // yüzünden kapı aç/kapa döngüsüne girerdi.
+        bool freshCommand = (lastAuthenticatedCommandTime > 0) &&
+                            (currentTime - lastAuthenticatedCommandTime <= (unsigned long)settings.closeTimeout * 1000UL);
+        bool signalLost = (lastAuthenticatedCommandTime > 0) && !freshCommand;
+        bool safetyLimit = !freshCommand &&
+                           (currentTime - stateChangeTime >= (unsigned long)settings.openLimit * 1000UL);
 
-          if (currentTime - stateChangeTime >= (settings.openLimit * 1000UL))
-            logMessage("Open limit reached. Starting pre-close warning.", 0, settings.logLevel);
-          else
+        if (signalLost || safetyLimit)
+        {
+          if (signalLost)
             logMessage("Loss of signal detected. Starting pre-close warning.", 0, settings.logLevel);
+          else
+            logMessage("Open limit reached. Starting pre-close warning.", 0, settings.logLevel);
 
           currentState = GATE_WARNING;
           warningStartTime = currentTime;
         }
         break;
+      }
 
       case GATE_WARNING:
         // Kapanma öncesi uyarı verme mantığı
@@ -1019,6 +1039,20 @@ void stateMachineTask(void *pvParameters)
         // Diğer durumlar (OPENING, CLOSING, CLOSED) kendi içinde yönetiliyor veya bir şey yapmıyor.
       }
       break;
+    }
+
+    // --- MOTOR ÇALIŞMA SÜRESİ ---
+    // Röle sinyali motorRunMs boyunca aktif kalır, sonra bırakılır ve durum ilerler.
+    // Bu blok olmadan OPENING/CLOSING'den çıkış yoktu: kapanma zinciri (uyarı → kapanma) hiç çalışmıyordu.
+    if ((currentState == GATE_OPENING || currentState == GATE_CLOSING) &&
+        (currentTime - stateChangeTime >= (unsigned long)settings.motorRunMs))
+    {
+      bool wasOpening = (currentState == GATE_OPENING);
+      stopMotor(false);
+      currentState = wasOpening ? GATE_IDLE_OPEN : GATE_CLOSED;
+      updateLights();
+      logMessage(wasOpening ? "Motor run finished. Gate is OPEN." : "Motor run finished. Gate is CLOSED.",
+                 0, settings.logLevel);
     }
 
     // Motor hareket halindeyken sürekli bip sesi (bu genel kontrol kalabilir)
@@ -1420,6 +1454,7 @@ class SettingsCharacteristicCallbacks : public BLECharacteristicCallbacks
     jsonDoc["closeTimeout"] = settings.closeTimeout;
     jsonDoc["preCloseWarning"] = settings.preCloseWarning;
     jsonDoc["openLimit"] = settings.openLimit;
+    jsonDoc["motorRunMs"] = settings.motorRunMs;
     jsonDoc["opMode"] = settings.operationMode;
     jsonDoc["authReq"] = settings.authorizationRequired;
     jsonDoc["pinExists"] = !settings.pinCode.isEmpty();
@@ -1498,6 +1533,22 @@ class SettingsCharacteristicCallbacks : public BLECharacteristicCallbacks
       settings.preCloseWarning = jsonDoc["preCloseWarning"];
       logMessage("Setting updated: preCloseWarning -> " + String(settings.preCloseWarning), 0, settings.logLevel);
       anyChangeDetected = true;
+    }
+
+    // Motor Çalışma Süresi (ms) — clamp'li
+    if (jsonDoc["motorRunMs"].is<int>())
+    {
+      int newMotorRun = jsonDoc["motorRunMs"].as<int>();
+      if (newMotorRun < MIN_MOTOR_RUN_MS)
+        newMotorRun = MIN_MOTOR_RUN_MS;
+      if (newMotorRun > MAX_MOTOR_RUN_MS)
+        newMotorRun = MAX_MOTOR_RUN_MS;
+      if (settings.motorRunMs != newMotorRun)
+      {
+        settings.motorRunMs = newMotorRun;
+        logMessage("Setting updated: motorRunMs -> " + String(settings.motorRunMs), 0, settings.logLevel);
+        anyChangeDetected = true;
+      }
     }
 
     // Çalışma Modu

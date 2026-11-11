@@ -55,6 +55,12 @@ const int SETTINGS_SAVE_DELAY = 1000;
 std::map<String, String> pairedGates; // Key: Gate MAC, Value: Benzersiz Ortak Anahtar
 String targetGateMac = "";
 String lastNonceFromGate = "";
+// Hedef kapı kilitleme: iki kapı aynı anda menzildeyse araç dönüşümlü komut göndermesin.
+// Mevcut hedefin beacon'ı bu süre içinde geldiyse yeni kapı yok sayılır.
+const unsigned long GATE_TARGET_STICKY_MS = 5000;
+unsigned long lastTargetBeaconTime = 0;
+// Eşleşme taraması zaman aşımı (SCAN_DURATION_MS) için başlangıç zamanı.
+static unsigned long scanModeStartTime = 0;
 
 struct LedPattern
 {
@@ -784,6 +790,7 @@ void OnDataRecv(const uint8_t *mac_addr, const uint8_t *incomingData, int len)
 
         // Eşleşme tamamlandı, tarama modundan çık ve başarı LED'ini yak
         currentVehicleState = VEHICLE_IDLE;
+        scanModeStartTime = 0; // eşleşme tamam, zaman aşımı sayacını sıfırla
         LedPattern p_success = {10000, 1}; // 10 saniye boyunca yanık kal
         xQueueSend(ledQueue, &p_success, 0);
       }
@@ -835,7 +842,19 @@ void OnDataRecv(const uint8_t *mac_addr, const uint8_t *incomingData, int len)
         // !!! SORUNUN ÇÖZÜMÜ BU SATIR !!!
         lastNonceFromGate = "";
       }
+      // Hedef kapı kilitleme (S6): aynı anda iki kapı menzildeyse komutlar sırayla iki kapıya
+      // gitmesin. Mevcut hedefin beacon'ı tazeyse bu kapı yok sayılır; hedef kapı susarsa diğerine geçilir.
+      bool isDifferentTarget = (targetGateMac.length() > 0) && (targetGateMac != gateMac);
+      bool targetStale = (lastTargetBeaconTime == 0) ||
+                         (millis() - lastTargetBeaconTime > GATE_TARGET_STICKY_MS);
+      if (isDifferentTarget && !targetStale)
+      {
+        logMessage("Beacon from " + gateMac + " ignored: target gate " + targetGateMac + " still active.", 1, settings.logLevel);
+        return;
+      }
+
       targetGateMac = gateMac;
+      lastTargetBeaconTime = millis();
 
       String commandToSend;
       // Cihazın çalışma süresi, ayarlardaki uyarı süresinden az mı?
@@ -1006,6 +1025,7 @@ void loop()
     if (currentVehicleState == VEHICLE_IDLE)
     {
       currentVehicleState = VEHICLE_WAITING_FOR_GATE_SCAN;
+      scanModeStartTime = currentTime;
       logMessage("FORCED AUTO-SCAN: Entering WAITING_FOR_GATE_SCAN mode...", 0, settings.logLevel);
     }
     autoScanTriggered = true; // Bu bloğun tekrar çalışmasını engelle
@@ -1016,6 +1036,17 @@ void loop()
   {
     saveSettings();
     isSettingsChanged = false;
+  }
+
+  // --- Eşleşme Taramasının Zaman Aşımı ---
+  // Aynı anda birden fazla araç tarama moduna girerse kapı yalnız ilk cevap verenle eşleşir;
+  // diğerleri sonsuza kadar beklemesin.
+  if (currentVehicleState == VEHICLE_WAITING_FOR_GATE_SCAN && scanModeStartTime != 0 &&
+      (currentTime - scanModeStartTime > SCAN_DURATION_MS))
+  {
+    logMessage("Pairing scan timed out. Returning to IDLE.", 0, settings.logLevel);
+    currentVehicleState = VEHICLE_IDLE;
+    scanModeStartTime = 0;
   }
 
   // --- Yeni Buton Yönetim Mantığı ---
@@ -1039,6 +1070,7 @@ void loop()
       if (currentVehicleState == VEHICLE_IDLE)
       {
         currentVehicleState = VEHICLE_WAITING_FOR_GATE_SCAN;
+        scanModeStartTime = currentTime;
         logMessage("3-second hold detected: Entering WAITING_FOR_GATE_SCAN mode...", 0, settings.logLevel);
       }
       longPressActionTriggered = true; // Eylemin tetiklendiğini işaretle ki tekrar çalışmasın
